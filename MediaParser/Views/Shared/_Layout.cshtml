@@ -1,0 +1,167 @@
+﻿@inject MediaParser.Services.MediaService MediaService
+
+@{
+    await MediaService.UpdateMediaLoyout();
+}
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] - MediaParser</title>
+    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header>
+        <nav class="navbar navbar-expand-sm navbar-dark mb-3">
+            <div class="container-fluid">
+                <a class="navbar-brand" asp-area="" asp-controller="Home" asp-action="Index">MediaParser</a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" aria-controls="navbarSupportedContent"
+                        aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between">
+                    <ul class="navbar-nav flex-grow-1">
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" asp-area="" asp-controller="Parser" asp-action="SearchByMedia">Пошук у медіа</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" asp-area="" asp-controller="Parser" asp-action="MyResults">Мої результати пошуку</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-dark" asp-area="" asp-controller="Media" asp-action="EditMedia">Редагувати медії</a>
+                        </li>
+                    </ul>
+
+                    <!-- Кнопка открытия модального окна -->
+                    <a class="nav-link" href="#" data-bs-toggle="modal" data-bs-target="#mediaSelectionModal">
+                        Обрати медії
+                    </a>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+
+    <div class="container" style="margin-bottom: 40px;">
+        <main role="main" class="pb-3">
+            @RenderBody()
+        </main>
+    </div>
+
+    <footer class="border-top footer text-muted">
+        <div class="container">
+            © @DateTime.Now.Year - MediaParser - <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
+        </div>
+    </footer>
+
+    <!-- Модальное окно для выбора соцсетей -->
+    <div class="modal fade" id="mediaSelectionModal" tabindex="-1" aria-labelledby="mediaSelectionLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="mediaSelectionLabel">Вибір медіа</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="mediaForm" asp-controller="Parser" asp-action="SelectMedia" method="post" class="ajax-form">
+                        <!-- Кнопки фильтрации -->
+                        <div class="mb-4">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <div class="btn-group w-100 media-type-filters" role="group">
+                                    <button type="button" class="btn btn-outline-primary" onclick="filterByType('User')">Користувачі</button>
+                                    <button type="button" class="btn btn-outline-primary" onclick="filterByType('FullName')">ПІБ</button>
+                                    <button type="button" class="btn btn-outline-primary active" onclick="filterByType('All')">Всі</button>
+                                </div>
+                            </div>
+
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div class="btn-group w-100" role="group">
+                                    <button type="button" class="btn btn-success" onclick="selectAllVisible()">✔ Вибрати всі</button>
+                                    <button type="button" class="btn btn-danger" onclick="deselectAllVisible()">✖ Прибрати всі</button>
+                                </div>
+                            </div>
+                        </div>
+
+
+                        <!-- Список соцсетей -->
+                        <div id="mediaCheckboxList">
+                            <div class="scroll-container vertical">
+                                <div class="row row-cols-1 row-cols-md-2 g-4">
+                                    @foreach (var media in MediaService.GetMediaSources())
+                                    {
+                                        <div class="col form-check" data-linktype="@media.Media.LinkType">
+                                            <input type="checkbox" class="form-check-input" id="media_@media.Media.Id"
+                                                   name="selectedMedia" value="@media.Media.Name"
+                                            @(media.IsSelected ? "checked" : "") />
+                                            <label class="form-check-label" for="media_@media.Media.Id">
+                                                @media.Media.Name
+                                            </label>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Кнопка сохранения -->
+                        <button type="submit" class="btn btn-primary mt-3">Зберегти</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="~/lib/jquery/dist/jquery.min.js"></script>
+    <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="~/js/site.js" asp-append-version="true"></script>
+
+    <script>
+        function filterByType(type) {
+            const checkboxes = document.querySelectorAll('#mediaCheckboxList .form-check');
+            const buttons = document.querySelectorAll('#mediaSelectionModal .media-type-filters button');
+
+            // Highlight the active filter button
+            buttons.forEach(btn => btn.classList.remove('active'));
+            if (type === 'All') {
+                buttons[2].classList.add('active');
+            } else if (type === 'User') {
+                buttons[0].classList.add('active');
+            } else if (type === 'FullName') {
+                buttons[1].classList.add('active');
+            }
+
+            checkboxes.forEach(cb => {
+                const linkType = cb.getAttribute('data-linktype');
+                if (type === 'All' || linkType === type) {
+                    cb.style.display = 'block';
+                } else {
+                    cb.style.display = 'none';
+                }
+            });
+        }
+
+        function selectAllVisible() {
+            document.querySelectorAll('#mediaCheckboxList .form-check').forEach(cb => {
+                if (cb.style.display !== 'none') {
+                    cb.querySelector('input[type="checkbox"]').checked = true;
+                }
+            });
+        }
+
+        function deselectAllVisible() {
+            document.querySelectorAll('#mediaCheckboxList .form-check').forEach(cb => {
+                if (cb.style.display !== 'none') {
+                    cb.querySelector('input[type="checkbox"]').checked = false;
+                }
+            });
+        }
+
+        document.addEventListener("DOMContentLoaded", () => filterByType('All'));
+    </script>
+
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

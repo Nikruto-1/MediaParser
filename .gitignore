@@ -1,0 +1,25 @@
+# IDE/build output
+.vs/
+.idea/
+**/bin/
+**/obj/
+*.user
+*.suo
+**/__pycache__/
+
+# Local credentials, browser state and generated data
+**/appsettings.Local.json
+**/appsettings.*.Local.json
+**/App_Data/
+.cache/
+.local/
+.artifacts/
+**/response.html
+*.db
+*.db-shm
+*.db-wal
+*.xlsx
+*.log
+.env
+.env.*
+!.env.example

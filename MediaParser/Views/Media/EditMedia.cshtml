@@ -1,0 +1,82 @@
+﻿@model List<MediaParser.Models.DBModels.MediaSource>
+
+@{
+    ViewData["Title"] = "Редагування медіа-джерел";
+}
+
+<h2>Редагування медіа-джерел</h2>
+
+<!-- Кнопки фильтрации -->
+<div class="mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <div class="btn-group w-100" role="group">
+            <button type="button" class="btn btn-primary filter-button" data-filter="User">Користувачі</button>
+            <button type="button" class="btn btn-primary filter-button" data-filter="FullName">ПІБ</button>
+            <button type="button" class="btn btn-success filter-button" data-filter="All">Всі</button>
+        </div>
+    </div>
+</div>
+
+
+
+<div class="mb-3">
+    <a asp-controller="Media" asp-action="Create" class="btn btn-success">Додати медіа</a>
+</div>
+
+@if (Model == null || !Model.Any())
+{
+    <p>Немає медіа-джерел для редагування.</p>
+}
+else
+{
+    <div id="mediaList" class="row media-list">
+        @foreach (var media in Model)
+        {
+            <div class="col-md-4 col-sm-6 col-12 mb-3 media-item" data-id="@media.Id" data-linktype="@media.LinkType">
+                <div class="card">
+                    <div class="card-body d-flex justify-content-between align-items-center">
+                        <a asp-action="Update" asp-route-id="@media.Id" class="btn btn-info">@media.Name</a>
+
+                        <form asp-controller="Media" asp-action="Delete" method="post" class="ajax-form deletion">
+                            <input type="hidden" name="id" value="@media.Id" data-idDelete="@media.Id" />
+                            <button type="submit" class="btn btn-danger">Видалити</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+<script>
+    document.addEventListener("DOMContentLoaded", function () {
+        const filterButtons = document.querySelectorAll(".filter-button");
+        const mediaItems = document.querySelectorAll(".media-item");
+
+        filterButtons.forEach(button => {
+            button.addEventListener("click", function () {
+                const filterType = this.getAttribute("data-filter");
+
+                // Сброс стилей кнопок
+                filterButtons.forEach(btn => {
+                    btn.classList.remove("btn-success");
+                    btn.classList.add("btn-primary");
+                });
+
+                // Устанавливаем активный стиль для нажатой кнопки
+                this.classList.remove("btn-primary");
+                this.classList.add("btn-success");
+
+                // Фильтрация карточек
+                mediaItems.forEach(item => {
+                    const itemType = item.getAttribute("data-linktype");
+
+                    if (filterType === "All" || itemType === filterType) {
+                        item.style.display = "";
+                    } else {
+                        item.style.display = "none";
+                    }
+                });
+            });
+        });
+    });
+</script>

@@ -1,0 +1,16 @@
+@{
+    ViewData["Title"] = "Головна сторінка";
+}
+
+<div class="container py-5 text-center">
+    <h1 class="display-4">Ласкаво просимо!</h1>
+    <p>Цей сайт призначений для <strong>пошуку акаунтів</strong> у різних соціальних мережах та онлайн-сервісах.</p>
+
+    <p>Введіть нікнейм або номер телефону, і ми перевіримо, чи існує акаунт у найпопулярніших медіа.</p>
+
+    <p><strong>Підтримувані платформи:</strong> Instagram, TikTok, Facebook, Telegram, Twitter, YouTube та інші.</p>
+
+    <a class="btn btn-primary btn-lg mt-3" asp-controller="Parser" asp-action="SearchByMedia">
+        🔍 Почати пошук
+    </a>
+</div>

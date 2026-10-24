@@ -1,0 +1,388 @@
+/* Базовые стили */
+html {
+    font-size: 14px;
+    position: relative;
+    height: 100%;
+}
+
+@media (min-width: 768px) {
+    html {
+        font-size: 16px;
+    }
+}
+
+body {
+    background: #1e2a44 url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300"><path fill="none" stroke="rgba(79, 193, 233, 0.2)" stroke-width="15" d="M0 150 Q150 100 300 150" /><path fill="none" stroke="rgba(255, 207, 159, 0.15)" stroke-width="10" d="M0 200 Q150 180 300 200" /><animate attributeName="d" values="M0 150 Q150 100 300 150;M0 150 Q150 120 300 150;M0 150 Q150 100 300 150" dur="15s" repeatCount="indefinite"/></svg>') repeat;
+    background-size: 300px 300px;
+    min-height: 100vh;
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+main {
+    flex: 1; /* Основное изменение: заставляет контент растягиваться и толкать футер вниз */
+}
+
+/* Навигация */
+.navbar {
+    background: rgba(30, 42, 68, 0.9);
+    backdrop-filter: blur(15px);
+    border-bottom: 1px solid rgba(79, 193, 233, 0.3);
+    padding: 15px 30px;
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+}
+
+.navbar:hover {
+    background: rgba(30, 42, 68, 0.95);
+}
+
+.nav-link {
+    position: relative;
+    color: #fff !important;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-shadow: 0 0 5px rgba(79, 193, 233, 0.5);
+    transition: all 0.3s ease;
+}
+
+.nav-link::after {
+    content: '';
+    position: absolute;
+    width: 0;
+    height: 2px;
+    bottom: -5px;
+    left: 0;
+    background: #ffcf9f;
+    box-shadow: 0 0 10px #ffcf9f;
+    transition: width 0.3s ease;
+}
+
+.nav-link:hover::after, .nav-link.active::after {
+    width: 100%;
+}
+
+/* Контейнер */
+.container {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 25px;
+    padding: 35px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+    backdrop-filter: blur(15px);
+    border: 1px solid rgba(79, 193, 233, 0.2);
+    /* margin-bottom убран, чтобы не создавать лишний отступ перед футером */
+}
+
+/* Кнопки */
+.btn-custom {
+    background: linear-gradient(135deg, #4fc1e9, #ffcf9f);
+    color: #fff;
+    border: none;
+    padding: 12px 30px;
+    border-radius: 40px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-shadow: 0 0 5px rgba(79, 193, 233, 0.5);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.btn-custom:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 10px 25px rgba(79, 193, 233, 0.5);
+}
+
+.btn-danger-neon {
+    background-color: #ff1744;
+    color: white;
+    border: none;
+    border-radius: 40px;
+    padding: 12px 24px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.btn-danger-neon:hover, .btn-danger-neon:focus {
+    transform: translateY(-4px);
+    background-color: #ff4569;
+    box-shadow: 0 10px 25px rgba(255, 23, 68, 0.8);
+}
+
+/* Футер */
+.footer {
+    background: rgba(30, 42, 68, 0.9);
+    backdrop-filter: blur(15px);
+    padding: 25px 0;
+    border-top: 1px solid rgba(79, 193, 233, 0.2);
+    width: 100%;
+    flex-shrink: 0; /* Предотвращает сжатие футера */
+}
+
+/* Dropdown */
+.dropdown-menu {
+    background: rgba(30, 42, 68, 0.9);
+    border-radius: 20px;
+    border: 1px solid rgba(79, 193, 233, 0.3);
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+}
+
+.dropdown-item {
+    padding: 12px 20px !important;
+    font-size: 1rem;
+    color: #fff;
+    border-radius: 10px;
+    transition: all 0.3s ease;
+}
+
+.dropdown-item:hover, .dropdown-item:focus, .dropdown-item:active {
+    background: rgba(79, 193, 233, 0.3);
+    text-shadow: 0 0 5px rgba(79, 193, 233, 0.7);
+}
+
+/* Offcanvas */
+.offcanvas {
+    background: linear-gradient(135deg, #1e2a44, rgba(255, 207, 159, 0.3));
+    color: #fff;
+    backdrop-filter: blur(10px);
+}
+
+/* Модальное окно */
+.modal-content {
+    background: rgba(30, 42, 68, 0.95);
+    border-radius: 20px;
+    border: 1px solid rgba(79, 193, 233, 0.3);
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(15px);
+}
+
+.modal-header {
+    background: linear-gradient(90deg, #4fc1e9, #ffcf9f);
+    color: #fff;
+    border-bottom: none;
+    border-radius: 20px 20px 0 0;
+    padding: 20px 30px;
+}
+
+.modal-title {
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-shadow: 0 0 5px rgba(79, 193, 233, 0.5);
+}
+
+.modal-body {
+    padding: 30px;
+    color: #fff;
+    text-shadow: 0 0 5px rgba(79, 193, 233, 0.3);
+}
+
+.modal-footer {
+    background: rgba(30, 42, 68, 0.9);
+    border-top: 1px solid rgba(79, 193, 233, 0.2);
+    border-radius: 0 0 20px 20px;
+    padding: 20px 30px;
+}
+
+/* Общий стиль для кастомных модальных окон */
+.custom-modal {
+    display: none;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(30, 42, 68, 0.95);
+    border-radius: 20px;
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(15px);
+    border: 1px solid rgba(79, 193, 233, 0.3);
+    z-index: 1055;
+    padding: 20px;
+    width: 90%;
+    max-width: 500px;
+}
+
+/* Формы */
+.form-control {
+    background: rgba(255, 255, 255, 0.9);
+    color: #1e2a44;
+    border: 1px solid #4fc1e9;
+    border-radius: 12px;
+    padding: 12px;
+    transition: all 0.3s ease;
+}
+
+.form-control:focus {
+    background: #fff;
+    border-color: #ffcf9f;
+    box-shadow: 0 0 10px rgba(255, 207, 159, 0.5);
+}
+
+.form-label {
+    color: #fff;
+    font-weight: 600;
+    text-shadow: 0 0 5px rgba(79, 193, 233, 0.3);
+}
+
+/* Таблица */
+.table {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.2);
+}
+
+.table-dark th {
+    background: rgba(79, 193, 233, 0.2);
+    color: #fff;
+    font-weight: 700;
+}
+
+.table-striped tbody tr:nth-of-type(odd) {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.table td, .table th {
+    border: 1px solid rgba(79, 193, 233, 0.1);
+    padding: 15px;
+}
+
+.scroll-container {
+    display: flex;
+    flex-wrap: wrap;
+    overflow-y: auto;
+    scroll-snap-type: y mandatory;
+    gap: 20px;
+    padding: 15px;
+    max-height: 300px;
+    padding-right: 10px;
+    justify-content: flex-start;
+}
+
+    /* Вертикальный скролл */
+    .scroll-container.vertical {
+        flex-direction: column;
+        overflow-y: auto;
+        overflow-x: hidden;
+    }
+
+    .scroll-container > * {
+        flex: 1 1 auto;
+        min-width: 250px;
+        max-width: 100%;
+        scroll-snap-align: start;
+    }
+
+    /* Стилизация полосы прокрутки */
+    .scroll-container::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+
+    .scroll-container::-webkit-scrollbar-thumb {
+        background: rgba(79, 193, 233, 0.7);
+        border-radius: 4px;
+    }
+
+    .scroll-container::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.1);
+    }
+
+/* Общий стиль кнопок */
+.btn {
+    font-size: 16px;
+    font-weight: 600;
+    padding: 12px 20px;
+    border-radius: 10px;
+    border: none;
+    outline: none;
+    transition: all 0.3s ease-in-out;
+    position: relative;
+    overflow: hidden;
+    z-index: 1;
+}
+
+.btn::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 300%;
+    height: 300%;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.3) 10%, transparent 70%);
+    transform: translate(-50%, -50%);
+    opacity: 0;
+    transition: opacity 0.4s ease-in-out;
+    z-index: -1;
+}
+
+.btn:hover::before {
+    opacity: 1;
+}
+
+.btn:active {
+    transform: scale(0.95);
+}
+
+/* Стили для разных кнопок */
+.btn-secondary {
+    background: linear-gradient(135deg, #6c757d, #495057);
+    color: #ffffff;
+    box-shadow: 0 4px 15px rgba(108, 117, 125, 0.4);
+}
+
+.btn-secondary:hover {
+    background: linear-gradient(135deg, #5a6268, #343a40);
+    box-shadow: 0 4px 25px rgba(108, 117, 125, 0.6);
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #28a745, #218838);
+    color: #ffffff;
+    box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
+}
+
+.btn-success:hover {
+    background: linear-gradient(135deg, #218838, #1e7e34);
+    box-shadow: 0 4px 25px rgba(40, 167, 69, 0.6);
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #007bff, #0056b3);
+    color: #ffffff;
+    box-shadow: 0 4px 15px rgba(0, 123, 255, 0.4);
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #0056b3, #004085);
+    box-shadow: 0 4px 25px rgba(0, 123, 255, 0.6);
+}
+
+.btn-danger {
+    background: linear-gradient(135deg, #dc3545, #c82333);
+    color: #ffffff;
+    box-shadow: 0 4px 15px rgba(220, 53, 69, 0.4);
+}
+
+.btn-danger:hover {
+    background: linear-gradient(135deg, #c82333, #bd2130);
+    box-shadow: 0 4px 25px rgba(220, 53, 69, 0.6);
+}
+
+.btn:hover {
+    filter: brightness(1.1);
+}
+
+.btn-close {
+    font-size: 18px;
+    color: #000;
+    opacity: 0.8;
+    transition: opacity 0.2s ease-in-out;
+}
+
+.btn-close:hover {
+    opacity: 1;
+}

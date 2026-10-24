@@ -1,0 +1,21 @@
+[
+  { "Name": "Instagram", "SearchUrl": "https://www.instagram.com/{0}/", "ErrorKeywords": ["User not found", "Sorry, this page isn't available", "The link you followed may be broken"], "LinkType": "User" },
+  { "Name": "TikTok", "SearchUrl": "https://www.tiktok.com/@{0}", "ErrorKeywords": ["Couldn't find this account", "This page doesn't exist"], "LinkType": "User" },
+  { "Name": "Twitter", "SearchUrl": "https://twitter.com/{0}", "ErrorKeywords": ["This account doesn't exist"], "LinkType": "User" },
+  { "Name": "Facebook", "SearchUrl": "https://www.facebook.com/{0}", "ErrorKeywords": ["This page isn't available", "Content not found", "The link may be broken"], "LinkType": "User" },
+  { "Name": "YouTube", "SearchUrl": "https://www.youtube.com/@{0}", "ErrorKeywords": ["This channel does not exist", "Channel not found"], "LinkType": "User" },
+  { "Name": "Reddit", "SearchUrl": "https://www.reddit.com/user/{0}", "ErrorKeywords": ["Sorry, nobody on Reddit goes by that name", "This user doesn't exist", "Page not found"], "LinkType": "User" },
+  { "Name": "GitHub", "SearchUrl": "https://github.com/{0}", "ErrorKeywords": ["This is not the page you're looking for", "Page does not exist"], "LinkType": "User" },
+  { "Name": "Snapchat", "SearchUrl": "https://www.snapchat.com/add/{0}", "ErrorKeywords": ["User not found", "Page not found"], "LinkType": "User" },
+  { "Name": "Pinterest", "SearchUrl": "https://www.pinterest.com/{0}/", "ErrorKeywords": ["This page doesn't exist", "Sorry, we couldn't find that page"], "LinkType": "User" },
+  { "Name": "LinkedIn", "SearchUrl": "https://www.linkedin.com/in/{0}/", "ErrorKeywords": ["This profile is not available", "Page not found"], "LinkType": "User" },
+  { "Name": "Twitch", "SearchUrl": "https://www.twitch.tv/{0}", "ErrorKeywords": ["This channel doesn't exist", "Page not found"], "LinkType": "User" },
+  { "Name": "SoundCloud", "SearchUrl": "https://soundcloud.com/{0}", "ErrorKeywords": ["We can't find that user", "Page not found"], "LinkType": "User" },
+  { "Name": "Rumble", "SearchUrl": "https://rumble.com/{0}", "ErrorKeywords": ["Oops! Page not found", "User not found"], "LinkType": "User" },
+  { "Name": "Medium", "SearchUrl": "https://medium.com/@{0}", "ErrorKeywords": ["We couldn't find what you were looking for"], "LinkType": "User" },
+  { "Name": "Spotify", "SearchUrl": "https://open.spotify.com/user/{0}", "ErrorKeywords": ["Sorry, we couldn't find that account", "User not found"], "LinkType": "User" },
+  { "Name": "Steam", "SearchUrl": "https://steamcommunity.com/id/{0}", "ErrorKeywords": ["The specified profile could not be found", "Profile not found"], "LinkType": "User" },
+  { "Name": "Epic Games", "SearchUrl": "https://www.epicgames.com/id/{0}", "ErrorKeywords": ["This account does not exist", "User not found"], "LinkType": "User" },
+  { "Name": "Telegram", "SearchUrl": "https://t.me/{0}", "ErrorKeywords": ["User not found", "Invalid username"], "LinkType": "User" },
+  { "Name": "LinkedIn-ПІБ", "SearchUrl": "https://www.linkedin.com/search/results/people/?keywords={0}", "ErrorKeywords": ["No results found"], "LinkType": "FullName" }
+]

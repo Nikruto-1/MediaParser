@@ -1,0 +1,145 @@
+﻿@model MediaParser.Models.SearchIdentifiers
+@{
+    ViewData["Title"] = "Пошук акаунтів";
+}
+
+<div class="">
+    <h2 class="text-center mb-4">Пошук акаунтів у медіа</h2>
+
+    <!-- Вывод ошибок валидации -->
+    @if (!ViewData.ModelState.IsValid)
+    {
+        <div class="alert alert-danger">
+            @foreach (var error in ViewData.ModelState.Values.SelectMany(v => v.Errors))
+            {
+                <p>@error.ErrorMessage</p>
+            }
+        </div>
+    }
+
+    <form asp-controller="Parser" asp-action="SearchByMedia" method="post" class="container rounded">
+        <div id="nicknameFields">
+            <label asp-for="Profile" class="form-label">Профіль браузера застосунку (необов'язково)</label>
+            <input asp-for="Profile" type="text" class="form-control" placeholder="Default" />
+            <small class="form-text text-muted">Використовується окремий профіль MediaParser. Залиште порожнім для Default.</small>
+
+            <label class="form-label">👤 Введіть нікнейм(и) або ПІБ</label>
+
+            @if (Model?.Nicknames != null && Model.Nicknames.Any())
+            {
+                @for (int i = 0; i < Model.Nicknames.Count; i++)
+                {
+                    <div class="input-group mb-2 nickname-group" data-index="@i">
+                        <input type="text" class="form-control" name="Nicknames[@i]" value="@Model.Nicknames[i]" placeholder="Введіть ідентифікатор...">
+                        <button type="button" class="btn btn-danger remove-field">❌</button>
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="input-group mb-2 nickname-group" data-index="0">
+                    <input type="text" class="form-control" name="Nicknames[0]" placeholder="Введіть ідентифікатор...">
+                    <button type="button" class="btn btn-danger remove-field">❌</button>
+                </div>
+            }
+        </div>
+
+        <button type="button" class="btn btn-success w-100 mb-2" id="addNickname">➕ Додати ідентифікатор</button>
+        <button type="submit" class="btn btn-primary w-100">🔎 Шукати</button>
+    </form>
+
+
+    @if (Model != null && ViewData["Results"] is List<ResultsModel> resultsList)
+    {
+        <div class="mb-4 mt-4 text-center">
+            <!-- Кнопка для экспорта в Excel -->
+            <form asp-controller="Parser" asp-action="ExportExcel" method="post">
+                <input type="hidden" name="isExportLastSearch" value="true" />
+                <button type="submit" class="btn btn-success">
+                    📊 Завантажити в Excel
+                </button>
+            </form>
+        </div>
+
+        <div class="mt-4">
+            <h3>Результати пошуку:</h3>
+
+            @foreach (var result in resultsList)
+            {
+                <div class="mb-3">
+                    <h5 class="fw-bold">🔍 Нікнейм: @result.Nickname</h5>
+
+                    @if (result.Results.Any())
+                    {
+                        <ul class="list-group">
+                            @foreach (var dictionary in result.Results)
+                            {
+                                <li class="list-group-item d-flex flex-column justify-content-between align-items-start">
+                                    <div class="w-100 mb-2">
+                                        <strong>@dictionary.Key</strong>
+                                    </div>
+                                    @if (!string.IsNullOrEmpty(dictionary.Value.ProfileUrl))
+                                    {
+                                        <div class="w-100 mb-2">
+                                            <a href="@dictionary.Value.ProfileUrl" target="_blank" rel="noopener noreferrer" class="text-decoration-none">
+                                                @dictionary.Value.ProfileUrl
+                                            </a>
+                                        </div>
+                                    }
+                                    <span class="badge bg-@(dictionary.Value.Status.Contains("✅") ? "success" : dictionary.Value.Status.Contains("⚠️") ? "warning" : "danger")">
+                                        @dictionary.Value.Status
+                                    </span>
+                                </li>
+                            }
+                        </ul>
+                    }
+                    else
+                    {
+                        <p class="text-muted">⚠️ Немає результатів для цього нікнейму.</p>
+                    }
+                </div>
+            }
+        </div>
+    }
+
+
+</div>
+@section Scripts {
+<script>
+    $(document).ready(function () {
+        function updateIndexes() {
+            $("#nicknameFields .nickname-group").each(function (index) {
+                $(this).attr("data-index", index);
+                $(this).find("input").attr("name", "Nicknames[" + index + "]");
+            });
+
+            // Проверяем количество полей и скрываем/показываем кнопку добавления
+            if ($("#nicknameFields .nickname-group").length >= 5) {
+                $("#addNickname").hide();
+            } else {
+                $("#addNickname").show();
+            }
+        }
+
+        $("#addNickname").click(function () {
+            if ($("#nicknameFields .nickname-group").length < 5) {
+                let newField = `
+                        <div class="input-group mb-2 nickname-group">
+                                <input type="text" class="form-control" placeholder="Введіть ідентифікатор...">
+                            <button type="button" class="btn btn-danger remove-field">❌</button>
+                        </div>
+                    `;
+                $("#nicknameFields").append(newField);
+                updateIndexes();
+            }
+        });
+
+        $(document).on("click", ".remove-field", function () {
+            $(this).closest(".nickname-group").remove();
+            updateIndexes();
+        });
+
+        updateIndexes();
+    });
+</script>
+}
