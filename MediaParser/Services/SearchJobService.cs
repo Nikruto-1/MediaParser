@@ -332,8 +332,10 @@ public sealed class SearchJobService : BackgroundService
     private SearchResultItem MakeResult(SearchWorkItem item, AccountCheckResult check)
     {
         string profileUrl = string.Empty;
+        if (Declarations.NazkDeclarationSource.IsSource(item.Source))
+            profileUrl = Declarations.NazkDeclarationSource.SearchUrl(item.Identifier);
         // API endpoints may include private query parameters and must not be exposed as profile links.
-        if (!string.IsNullOrWhiteSpace(item.Source.SearchUrl))
+        else if (!string.IsNullOrWhiteSpace(item.Source.SearchUrl))
         {
             try { profileUrl = Classes.SearchAlgorithm.BuildSearchUrl(item.Source.SearchUrl, item.Identifier); }
             catch (ArgumentException) { }
@@ -341,7 +343,8 @@ public sealed class SearchJobService : BackgroundService
         }
         return new(item.Source.Id, item.Source.Name, item.Identifier, profileUrl, check.Status,
             check.Label, check.Reason, check.Evidence,
-            check.Status is AccountStatus.Pending or AccountStatus.Checking ? null : _clock.GetUtcNow());
+            check.Status is AccountStatus.Pending or AccountStatus.Checking ? null : _clock.GetUtcNow(),
+            check.Declarations?.ToArray(), check.DeclarationTotal);
     }
 
     private static bool IsTerminal(Job job) => job.State is "completed" or "cancelled" or "failed";

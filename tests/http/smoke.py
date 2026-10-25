@@ -3,6 +3,7 @@ import argparse
 import html
 import http.cookiejar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html.parser import HTMLParser
 import io
 import json
 import re
@@ -44,6 +45,23 @@ def token(page):
     match = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', page.decode())
     assert match, 'Antiforgery token missing'
     return html.unescape(match.group(1))
+
+class SourceMarkup(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.sources, self.hints, self.active_hint = [], {}, None
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if 'source-option' in attributes.get('class', '').split():
+            self.sources.append(attributes)
+        if attributes.get('id', '').startswith('sourceHint_'):
+            self.active_hint = attributes['id']
+            self.hints[self.active_hint] = ''
+    def handle_data(self, data):
+        if self.active_hint is not None:
+            self.hints[self.active_hint] += data
+    def handle_endtag(self, tag):
+        if tag == 'span': self.active_hint = None
 
 def api(path, data=None, *, csrf=None, browser=client):
     status, body, _, _ = request(path, data, as_json=data is not None, csrf=csrf, browser=browser)
@@ -101,6 +119,17 @@ try:
     assert api('/Parser/StartSearch',{'identifiers':['x'],'sourceIds':[1],'mode':'User'})[0] == 400
     _, search_page, _, _ = request('/Parser/SearchByMedia')
     csrf = token(search_page)
+    markup = SourceMarkup()
+    markup.feed(search_page.decode())
+    nazk_sources = [source for source in markup.sources if source.get('data-source-name') == 'НАЗК — декларації']
+    assert len(nazk_sources) == 1, 'NAZK declaration source is missing or duplicated in inline selection'
+    nazk_source = nazk_sources[0]
+    assert nazk_source.get('data-mode') == 'FullName' and nazk_source.get('data-manual-supported') == 'false', 'NAZK should use full-name API lookup rather than manual Chrome'
+    nazk_hint = markup.hints.get('sourceHint_' + nazk_source['data-source-id'], '')
+    assert 'НАЗК' in nazk_hint and 'API' in nazk_hint, 'NAZK public API requirements are not explained next to its source'
+    # Deliberately use the incompatible mode: validation must reject before the official API can be called.
+    assert api('/Parser/StartSearch',{'identifiers':['fixture_user'],'sourceIds':[int(nazk_source['data-source-id'])],'mode':'User'},csrf=csrf)[0] == 400
+    print('PASS NAZK is a single full-name API source with guidance; nickname mode rejects it without an external request')
     for invalid in [
         {'identifiers':['x'],'sourceIds':[],'mode':'User'},
         {'identifiers':[],'sourceIds':[1],'mode':'User'},

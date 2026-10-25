@@ -5,6 +5,7 @@ using MediaParser.Repositories;
 using MediaParser.Services;
 using MediaParser.Services.DBServices;
 using MediaParser.Services.Captcha;
+using MediaParser.Services.Declarations;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -41,6 +42,8 @@ builder.Services.AddOptions<CaptchaOptions>().Bind(builder.Configuration.GetSect
 builder.Services.AddHttpClient<ICaptchaSolver, TwoCaptchaClient>().ConfigurePrimaryHttpMessageHandler(() =>
     new SocketsHttpHandler { AllowAutoRedirect = false, PooledConnectionLifetime = TimeSpan.FromMinutes(2) });
 builder.Services.AddSingleton<ICaptchaAutomation, BrowserCaptchaAutomation>();
+builder.Services.AddHttpClient<INazkDeclarationSearch, NazkDeclarationSearch>().ConfigurePrimaryHttpMessageHandler(() =>
+    new SocketsHttpHandler { AllowAutoRedirect = false, PooledConnectionLifetime = TimeSpan.FromMinutes(2) });
 builder.Services.AddSingleton<IAccountChecker, AccountChecker>();
 builder.Services.AddSingleton<SearchJobService>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<SearchJobService>());

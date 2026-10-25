@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
+using System.IO.Compression;
 using System.Threading.Channels;
 using System.Text.Json;
+using System.Xml.Linq;
+using MediaParser.Classes;
 using MediaParser.Models;
 using MediaParser.Models.DBModels;
 using MediaParser.Controllers;
@@ -31,7 +34,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Manual checks validate ownership and target status and preserve every other result", ManualValidationAndPreservation),
     ("Cancelling a manual check preserves retained rows and holds the occupied worker slot", ManualCancellationAndSlots),
     ("Manual checking targets one source and identifier pair without changing its other identifiers", ManualTargetPairIsolation),
-    ("Ordinary retry of an unresolved manual result uses only the non-interactive checker", OrdinaryRetryIsNotInteractive)
+    ("Ordinary retry of an unresolved manual result uses only the non-interactive checker", OrdinaryRetryIsNotInteractive),
+    ("Declaration metadata survives progress and history and is retained when other sources are retried or checked manually", DeclarationMetadataRoundtrip),
+    ("Excel exports rich declarations on a linked worksheet and preserves the five legacy result columns", DeclarationExcelExport)
 };
 var failures = 0;
 foreach (var test in tests)
@@ -573,6 +578,159 @@ static async Task OrdinaryRetryIsNotInteractive()
         "Ordinary retry opened a second interactive check without an explicit manual request.");
     normal.Finish(AccountStatus.Found);
     await fixture.Finished("owner", retry.Id);
+}
+
+static async Task DeclarationMetadataRoundtrip()
+{
+    await using var fixture = await Fixture.Create();
+    const string identifier = "Тестовий Користувач";
+    const string secret = "TEST-ONLY-declaration-source-key-640723";
+    var declarations = new[]
+    {
+        new DeclarationSummary("11111111-1111-4111-8111-111111111111", identifier, "2025", "Щорічна", "Декларація",
+            "Тестова посада", "Тестова установа", new DateTimeOffset(2026, 3, 1, 10, 20, 30, TimeSpan.Zero),
+            "https://public.nazk.gov.ua/documents/11111111-1111-4111-8111-111111111111"),
+        new DeclarationSummary("22222222-2222-4222-8222-222222222222", identifier, "2024", null, null,
+            null, null, null, "https://public.nazk.gov.ua/documents/22222222-2222-4222-8222-222222222222")
+    };
+    var official = new MediaSource
+    {
+        Id = 20, Name = "НАЗК — декларації", LinkType = "FullName", ErrorKeywordsRaw = "[]",
+        ApiUrl = "https://public-api.nazk.gov.ua/v2/documents/list?query={0}",
+        SearchUrl = "https://public.nazk.gov.ua/documents?query={0}", ApiKey = secret
+    };
+    var other = Work(1)[0];
+    var original = Started(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(official, identifier), other }));
+    var declarationCall = await fixture.Checker.Next();
+    Assert(declarationCall.Source.Id == 20 && declarationCall.Source.LinkType == "FullName" && !declarationCall.IsInteractive,
+        "The declaration source was not checked through the normal full-name work item.");
+    declarationCall.Response.TrySetResult(new AccountCheckResult(AccountStatus.Found, "Знайдено декларації в офіційному реєстрі.",
+        "Детермінована відповідь локального тесту.", declarations, 3));
+    var unresolved = await fixture.Checker.Next();
+    var progress = fixture.Service.Get("owner", original.Id)!;
+    var declarationRow = progress.Results.Single(row => row.SiteId == 20);
+    AssertDeclarationMetadata(declarationRow, declarations, 3);
+    AssertDeclarationMetadata(Planned(progress).Single(row => row.SiteId == 20), declarations, 3);
+    Assert(progress.Completed == 1 && progress.Total == 2 && progress.Results.Count == 1,
+        "Declaration records were counted as separate site checks instead of one source result.");
+    unresolved.Finish(AccountStatus.Blocked);
+    var completed = await fixture.Finished("owner", original.Id);
+
+    var serialized = JsonSerializer.Serialize(completed);
+    Assert(!serialized.Contains(secret, StringComparison.Ordinal) &&
+        !serialized.Contains("public-api.nazk.gov.ua", StringComparison.Ordinal) &&
+        !serialized.Contains("ApiKey", StringComparison.OrdinalIgnoreCase), "Declaration progress exposed source credentials or private API configuration.");
+    var restored = JsonSerializer.Deserialize<SearchJobSnapshot>(serialized)!;
+    AssertDeclarationMetadata(restored.Results.Single(row => row.SiteId == 20), declarations, 3);
+    Assert(restored.Results.Single(row => row.SiteId == 20).CheckedAt == declarationRow.CheckedAt,
+        "The declaration check timestamp changed during the progress JSON roundtrip.");
+
+    var session = new MemorySession();
+    var accessor = new HttpContextAccessor { HttpContext = new DefaultHttpContext { Session = session } };
+    new ResultsRepository(accessor).SaveJob(completed);
+    var history = new ResultsRepository(accessor).GetListResults();
+    var stored = history.Single(result => result.Nickname == identifier).Details.Single();
+    AssertDeclarationMetadata(stored, declarations, 3);
+    AssertDeclarationMetadata(new ResultsRepository(accessor).GetListLustResults()
+        .Single(result => result.Nickname == identifier).Details.Single(), declarations, 3);
+    Assert(!session.GetString("UserResults")!.Contains(secret, StringComparison.Ordinal), "Saved declaration history exposed a source API key.");
+
+    var retry = Started(fixture.Service.Retry("owner", completed.Id));
+    Assert(retry.Total == 1, "Retry included a confirmed declaration source result.");
+    var retried = await fixture.Checker.Next();
+    Assert(retried.Source.Id == 1, "Retry called the declaration source despite its Found outcome.");
+    retried.Finish(AccountStatus.Blocked);
+    await fixture.Finished("owner", retry.Id);
+
+    fixture.Time.Advance(TimeSpan.FromMinutes(1));
+    var manual = Started(fixture.Service.TryStartManual("owner", completed.Id, 1, other.Identifier));
+    Assert(manual.IsInteractive && manual.Total == 2 && manual.Completed == 1 && manual.Results.Count == 1,
+        "Manual admission dropped the declaration result or reset its completed progress.");
+    AssertDeclarationMetadata(manual.Results.Single(), declarations, 3);
+    Assert(manual.Results.Single().CheckedAt == declarationRow.CheckedAt,
+        "Manual admission changed a retained declaration timestamp.");
+    var manualCall = await fixture.Checker.Next();
+    Assert(manualCall.Source.Id == 1 && manualCall.IsInteractive, "Manual checking reopened the declaration source instead of its selected unresolved row.");
+    manualCall.Finish(AccountStatus.Found);
+    var manualFinal = await fixture.Finished("owner", manual.Id);
+    var retained = manualFinal.Results.Single(row => row.SiteId == 20);
+    AssertDeclarationMetadata(retained, declarations, 3);
+    Assert(retained.CheckedAt == declarationRow.CheckedAt && fixture.Checker.CallCount == 4 && fixture.Checker.InteractiveCallCount == 1,
+        "Manual completion rechecked declarations or rewrote their verification timestamp.");
+    Assert(fixture.Service.Retry("owner", manual.Id).StatusCode == 400,
+        "A job containing only confirmed results including declarations was retried.");
+}
+
+static void AssertDeclarationMetadata(SearchResultItem row, IReadOnlyList<DeclarationSummary> expected, int total)
+{
+    Assert(row.Outcome == AccountStatus.Found && row.DeclarationTotal == total && row.Declarations != null &&
+        row.Declarations.SequenceEqual(expected), "Typed declaration metadata, null fields, ordering, or total count changed.");
+}
+
+static Task DeclarationExcelExport()
+{
+    var declarations = new[]
+    {
+        new DeclarationSummary("11111111-1111-4111-8111-111111111111", "=Тестовий ПІБ & <Петро>", "2025/2026", "Щорічна", "Декларація",
+            "=HYPERLINK(\"https://example.test\")", "Установа & <філія>\u0001 😀",
+            new DateTimeOffset(2026, 3, 1, 12, 20, 30, TimeSpan.FromHours(2)),
+            "https://public.nazk.gov.ua/documents/11111111-1111-4111-8111-111111111111?a=1&b=2"),
+        new DeclarationSummary("22222222-2222-4222-8222-222222222222", "Інший Тестовий ПІБ", null, null, null, null, null, null,
+            "https://public.nazk.gov.ua/documents/22222222-2222-4222-8222-222222222222")
+    };
+    var detail = new SearchResultItem(20, "НАЗК — декларації", "=1+1", "https://public.nazk.gov.ua/documents?query=test",
+        AccountStatus.Found, "Знайдено декларації", "Є збіги", "Офіційний реєстр",
+        new DateTimeOffset(2026, 10, 25, 11, 0, 0, TimeSpan.FromHours(2)), declarations, 2);
+    var bytes = ExcelExport.GenerateExcelFile(new()
+    {
+        new() { Nickname = detail.Identifier, Details = new() { detail }, Results = new() { [detail.Site] = ("legacy duplicate", detail.ProfileUrl) } },
+        new() { Nickname = "=SUM(1,2)", Results = new() { ["Legacy & <source>"] = ("Попередній статус", "https://example.test/legacy") } }
+    });
+    using var stream = new MemoryStream(bytes);
+    using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
+    var documents = new Dictionary<string, XDocument>();
+    foreach (var entry in archive.Entries)
+    {
+        using var xml = entry.Open();
+        documents.Add(entry.FullName, XDocument.Load(xml));
+    }
+    XNamespace ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    XNamespace package = "http://schemas.openxmlformats.org/package/2006/relationships";
+    XNamespace contentTypes = "http://schemas.openxmlformats.org/package/2006/content-types";
+    Assert(documents["xl/workbook.xml"].Descendants(ns + "sheet").Select(sheet => (string?)sheet.Attribute("name"))
+        .SequenceEqual(new[] { "Results", "Declarations" }), "The workbook did not register its Results and Declarations worksheets.");
+    Assert(documents["xl/_rels/workbook.xml.rels"].Descendants(package + "Relationship").Any(relationship =>
+        (string?)relationship.Attribute("Id") == "rId2" && (string?)relationship.Attribute("Target") == "worksheets/sheet2.xml"),
+        "The declarations worksheet relationship is missing.");
+    Assert(documents["[Content_Types].xml"].Descendants(contentTypes + "Override").Any(part =>
+        (string?)part.Attribute("PartName") == "/xl/worksheets/sheet2.xml" &&
+        (string?)part.Attribute("ContentType") == "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"),
+        "The declarations worksheet content type is missing.");
+    var resultRows = documents["xl/worksheets/sheet1.xml"].Descendants(ns + "row").ToArray();
+    Assert(resultRows.Length == 3 && resultRows.All(row => row.Elements(ns + "c").Count() == 5),
+        "Rich metadata changed the five legacy result columns or duplicated a typed result.");
+    Assert(resultRows[1].Descendants(ns + "t").Any(value => value.Value == "2026-10-25 09:00 UTC"),
+        "A typed result timestamp labeled UTC was not converted to UTC.");
+    var rows = documents["xl/worksheets/sheet2.xml"].Descendants(ns + "row").ToArray();
+    Assert(rows.Length == 3 && rows.All(row => row.Elements(ns + "c").Count() == 9),
+        "Declaration export omitted a record, a metadata column, or its header.");
+    var first = rows[1].Descendants(ns + "t").Select(text => text.Value).ToArray();
+    Assert(first.SequenceEqual(new[]
+    {
+        "=1+1", declarations[0].FullName, "2025/2026", "Щорічна", "Декларація", declarations[0].Position!,
+        "Установа & <філія> 😀", "2026-03-01 10:20:30 UTC", declarations[0].Url
+    }), "Declaration metadata, XML escaping, Unicode, UTC submission time, or literal formula-like strings changed.");
+    var second = rows[2].Descendants(ns + "t").Select(text => text.Value).ToArray();
+    Assert(second.Skip(2).Take(6).All(string.IsNullOrEmpty), "Missing declaration fields were not exported as empty cells.");
+    Assert(documents.Values.All(document => !document.Descendants(ns + "f").Any()) &&
+        documents["xl/worksheets/sheet2.xml"].Descendants(ns + "c").All(cell => (string?)cell.Attribute("t") == "inlineStr"),
+        "Untrusted declaration text became an executable spreadsheet formula.");
+
+    using var emptyStream = new MemoryStream(ExcelExport.GenerateExcelFile(new()));
+    using var emptyArchive = new ZipArchive(emptyStream, ZipArchiveMode.Read);
+    Assert(emptyArchive.GetEntry("xl/worksheets/sheet2.xml") == null,
+        "An export without declaration metadata gained an unnecessary extra worksheet.");
+    return Task.CompletedTask;
 }
 
 static IReadOnlyList<SearchResultItem> Planned(SearchJobSnapshot snapshot) => snapshot.PlannedResults

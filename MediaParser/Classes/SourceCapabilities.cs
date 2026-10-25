@@ -23,6 +23,7 @@ public static class SourceCapabilities
         string host = uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host;
         return host.ToLowerInvariant() switch
         {
+            "public.nazk.gov.ua" => "НАЗК: пошук декларацій за ПІБ через офіційний публічний API. Збіг ПІБ не підтверджує особу; частина декларацій може бути закритою.",
             "epicgames.com" => "Epic Games: адреса /id/ не підтверджує публічний профіль за display name. Потрібна ручна перевірка через Epic Games або офіційний авторизований API.",
             "open.spotify.com" => "Spotify: введіть точний username/ID із посилання /user/…, а не відображуване ім’я профілю.",
             "steamcommunity.com" when uri.AbsolutePath.StartsWith("/id/", StringComparison.OrdinalIgnoreCase) => "Steam: тут перевіряється частина власної адреси /id/…, а не ім’я профілю або логін. SteamID64 використовує іншу адресу /profiles/….",

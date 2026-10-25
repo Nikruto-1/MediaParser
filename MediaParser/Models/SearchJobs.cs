@@ -20,7 +20,8 @@ public sealed class ManualCheckRequest
 }
 
 public sealed record SearchResultItem(int SiteId, string Site, string Identifier, string ProfileUrl,
-    AccountStatus Outcome, string Label, string Reason, string? Evidence, DateTimeOffset? CheckedAt)
+    AccountStatus Outcome, string Label, string Reason, string? Evidence, DateTimeOffset? CheckedAt,
+    IReadOnlyList<DeclarationSummary>? Declarations = null, int? DeclarationTotal = null)
 {
     public string Status => Outcome.ToString().ToLowerInvariant();
 }

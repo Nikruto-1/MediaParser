@@ -24,6 +24,20 @@
             return ["https:", "http:"].includes(url.protocol) ? url.href : null;
         } catch { return null; }
     };
+    const officialRegistryUrl = value => {
+        try {
+            const url = new URL(value);
+            return url.origin === "https://public.nazk.gov.ua" && !url.username && !url.password ? url.href : null;
+        } catch { return null; }
+    };
+    const officialDeclarationUrl = (value, id) => {
+        const official = officialRegistryUrl(value);
+        if (!official || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id || ""))) return null;
+        const url = new URL(official);
+        return !url.search && !url.hash && url.pathname.toLowerCase() === `/documents/${String(id).toLowerCase()}` ? url.href : null;
+    };
+    const isDeclarationResult = result => Array.isArray(result.declarations)
+        || Number.isInteger(result.declarationTotal) || !!officialRegistryUrl(result.profileUrl);
     const formatDate = value => {
         const date = new Date(value);
         return value && !Number.isNaN(date.getTime()) ? date.toLocaleString("uk-UA", {
@@ -49,6 +63,61 @@
         });
     }
 
+    function createDeclarationSection(result) {
+        const declarations = Array.isArray(result.declarations) ? result.declarations.filter(item => item && typeof item === "object").slice(0, 20) : [];
+        const total = Number.isInteger(result.declarationTotal) && result.declarationTotal >= declarations.length ? result.declarationTotal : null;
+        const section = element("section", "declaration-results");
+        section.setAttribute("aria-label", "Публічні декларації НАЗК");
+        const heading = element("div", "declaration-heading");
+        heading.append(element("h4", "", "Публічні декларації НАЗК"), element("span", "declaration-count",
+            total !== null ? `Показано ${declarations.length} із ${total}` : `Показано ${declarations.length} документів`));
+        section.append(heading, element("p", "identity-notice", "Збіг ПІБ не підтверджує особу. Відсутність декларацій не доводить, що людина не працює або не працювала в державних органах."));
+        if (declarations.length) {
+            const list = element("ul", "declaration-list");
+            list.tabIndex = 0;
+            list.setAttribute("aria-label", "Знайдені публічні декларації");
+            declarations.forEach(declaration => {
+                const item = element("li", "declaration-item");
+                item.append(element("h5", "declaration-name", declaration.fullName || "ПІБ не вказано в результаті"));
+                const metadata = element("dl", "declaration-meta");
+                const field = (label, value) => {
+                    if (value !== null && value !== undefined && String(value).trim())
+                        metadata.append(element("dt", "", label), element("dd", "", String(value)));
+                };
+                field("Рік декларації", declaration.declarationYear);
+                field("Тип декларації", declaration.declarationType);
+                field("Тип документа", declaration.documentType);
+                field("Посада", declaration.position);
+                field("Місце роботи", declaration.workplace);
+                if (declaration.submittedAt) field("Подано", formatDate(declaration.submittedAt));
+                if (metadata.children.length) item.append(metadata);
+                const url = officialDeclarationUrl(declaration.url, declaration.id);
+                if (url) {
+                    const link = element("a", "declaration-link", "Відкрити декларацію НАЗК ↗");
+                    link.href = url;
+                    link.target = "_blank";
+                    link.rel = "noopener noreferrer";
+                    item.append(link);
+                }
+                list.append(item);
+            });
+            section.append(list);
+            if ((total !== null && total > declarations.length) || declarations.length === 20)
+                section.append(element("p", "declaration-limit", "Показано першу сторінку документів. Повний список перевірте в офіційному реєстрі."));
+        } else {
+            section.append(element("p", "declaration-empty", "Документів для показу немає. Перегляньте причину результату та уточніть ПІБ в офіційному реєстрі."));
+        }
+        const registry = officialRegistryUrl(result.profileUrl);
+        if (registry) {
+            const link = element("a", "declaration-link declaration-all", "Усі результати в офіційному реєстрі ↗");
+            link.href = registry;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            section.append(link);
+        }
+        return section;
+    }
+
     function createResultCard(result, manualCheck) {
         const status = statuses[result.status] ? result.status : "unconfirmed";
         const card = element("article", `result-card status-${status}`);
@@ -62,13 +131,14 @@
         heading.append(identity, element("span", `status-pill status-${status}`, result.label || statuses[status].label));
         card.append(heading);
         if (result.reason) card.append(element("p", "result-reason", result.reason));
-        const url = safeUrl(result.profileUrl);
-        if (url) {
+        const registryResult = isDeclarationResult(result);
+        const url = registryResult ? officialRegistryUrl(result.profileUrl) : safeUrl(result.profileUrl);
+        if (url && !registryResult) {
             const link = element("a", "result-url", `${url} ↗`);
             link.href = url;
             link.target = "_blank";
             link.rel = "noopener noreferrer";
-            link.setAttribute("aria-label", `${status === "found" ? "Відкрити профіль" : "Відкрити сторінку перевірки"}: ${result.site}, ${result.identifier}`);
+            link.setAttribute("aria-label", `${registryResult ? "Відкрити офіційний реєстр НАЗК" : status === "found" ? "Відкрити профіль" : "Відкрити сторінку перевірки"}: ${result.site}, ${result.identifier}`);
             card.append(link);
         }
         if (manualCheck && url && ["blocked", "unconfirmed", "error", "cancelled"].includes(status)) {
@@ -79,11 +149,12 @@
             actions.append(button);
             card.append(actions);
         }
+        if (registryResult && !["pending", "checking"].includes(status)) card.append(createDeclarationSection(result));
         const details = element("details", "result-details");
         details.append(element("summary", "", "Деталі перевірки"));
         const list = element("dl");
         const detail = (label, value) => list.append(element("dt", "", label), element("dd", "", value));
-        detail("Статус", statuses[status].label);
+        detail("Статус", result.label || statuses[status].label);
         if (result.reason) detail("Причина", result.reason);
         detail("Ознаки", result.evidence || "Додаткових ознак немає.");
         detail("Перевірено", result.checkedAt ? formatDate(result.checkedAt) : status === "checking" ? "Перевірка триває." : "Ще не перевірено.");
@@ -236,12 +307,13 @@
             });
             byId("modeHint").textContent = mode === "User"
                 ? "Шукаємо конкретний профіль за нікнеймом."
-                : "Шукаємо згадки за ім’ям і прізвищем. Знайдені сторінки потребують перевірки особи.";
+                : "Пошук за ПІБ у соцмережах і публічних реєстрах.";
+            byId("fullNameNotice").hidden = mode !== "FullName";
             byId("sourceModeHint").textContent = mode === "User"
                 ? "Джерела пошуку за ПІБ вимкнені для цього режиму."
                 : "Джерела профілів за нікнеймом вимкнені для цього режиму.";
             fields.querySelectorAll("input").forEach(input => {
-                input.placeholder = mode === "User" ? "Наприклад, nickname" : "Наприклад, Ім’я Прізвище";
+                input.placeholder = mode === "User" ? "Наприклад, nickname" : "Прізвище Ім’я По батькові";
             });
             validateIdentifiers();
             updateSelection();
@@ -371,7 +443,8 @@
             const query = normalizeText(resultText.value.trim());
             filteredResults = results.filter(result => matchesStatus(result.status, resultStatus.value)
                 && (resultSite.value === "all" || String(result.siteId) === resultSite.value)
-                && (!query || normalizeText([result.site, result.identifier, result.label, result.reason, result.evidence].join(" ")).includes(query)));
+                && (!query || normalizeText([result.site, result.identifier, result.label, result.reason, result.evidence,
+                    ...(Array.isArray(result.declarations) ? result.declarations.filter(Boolean).flatMap(declaration => [declaration.fullName, declaration.declarationYear, declaration.declarationType, declaration.documentType, declaration.position, declaration.workplace]) : [])].join(" ")).includes(query)));
             filteredResults.sort((left, right) => (statuses[left.status]?.order ?? 9) - (statuses[right.status]?.order ?? 9)
                 || collator.compare(left.site, right.site) || collator.compare(left.identifier, right.identifier));
             const list = byId("resultList");

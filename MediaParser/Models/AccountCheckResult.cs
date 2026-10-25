@@ -12,12 +12,13 @@ public enum AccountStatus
     Checking
 }
 
-public sealed record AccountCheckResult(AccountStatus Status, string Reason, string? Evidence = null)
+public sealed record AccountCheckResult(AccountStatus Status, string Reason, string? Evidence = null,
+    IReadOnlyList<DeclarationSummary>? Declarations = null, int? DeclarationTotal = null)
 {
     public string StatusCode => Status.ToString().ToLowerInvariant();
     public string Label => Status switch
     {
-        AccountStatus.Found => "Знайдено",
+        AccountStatus.Found => Declarations?.Count > 0 ? "Знайдено декларації" : "Знайдено",
         AccountStatus.NotFound => "Не знайдено",
         AccountStatus.Blocked => "Доступ обмежено",
         AccountStatus.Unconfirmed => "Не підтверджено",

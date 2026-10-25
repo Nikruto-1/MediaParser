@@ -22,6 +22,7 @@ jobs:
       - run: dotnet run --project tests/storage/MediaParser.StorageTests.csproj
       - run: dotnet run --project tests/jobs/MediaParser.JobTests.csproj
       - run: dotnet run --project tests/captcha/MediaParser.CaptchaTests.csproj
+      - run: dotnet run --project tests/declarations/MediaParser.DeclarationTests.csproj
       - name: HTTP integration
         shell: bash
         run: |

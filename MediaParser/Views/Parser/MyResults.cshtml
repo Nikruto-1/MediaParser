@@ -12,7 +12,7 @@
     <header class="page-heading"><div><p class="eyebrow">ВАШІ ПОПЕРЕДНІ ПЕРЕВІРКИ</p><h1>Історія пошуку</h1><p class="page-description">Результати поточної сесії з причинами, ознаками й часом перевірки.</p></div><a asp-action="SearchByMedia" class="btn btn-primary">Новий пошук <span aria-hidden="true">↗</span></a></header>
     @if (count > 0)
     {
-        <div class="results-heading"><p class="field-hint mb-0">Збережено @count результатів. Знайдені профілі показано першими в кожній перевірці.</p><form asp-action="ExportExcel" method="post"><button type="submit" class="btn btn-outline-secondary btn-sm">Уся історія в Excel <span aria-hidden="true">↓</span></button></form></div>
+        <div class="results-heading"><p class="field-hint mb-0">Збережено @count результатів. Знайдені результати показано першими в кожній перевірці.</p><form asp-action="ExportExcel" method="post"><button type="submit" class="btn btn-outline-secondary btn-sm">Уся історія в Excel <span aria-hidden="true">↓</span></button></form></div>
         @if (legacyCount > 0)
         {
             <p class="history-legacy-note">@legacyCount старих результатів містять лише текст перевірки. Для них збережено початкове повідомлення.</p>
@@ -42,10 +42,58 @@
                 {
                     @foreach (var result in search.Details!.OrderBy(result => StatusOrder(result.Outcome)).ThenBy(result => result.Site))
                     {
+                        var registryResult = result.Declarations != null || result.DeclarationTotal.HasValue || IsOfficialRegistryUrl(result.ProfileUrl);
+                        var declarations = result.Declarations?.Take(20).ToList() ?? new List<DeclarationSummary>();
+                        var declarationTotal = result.DeclarationTotal.GetValueOrDefault(-1);
                         <article class="result-card status-@result.Status" data-result-card data-status="@result.Status" data-site="@result.Site">
                             <div class="result-card-heading"><div class="result-identity"><span class="source-avatar" aria-hidden="true">@result.Site.FirstOrDefault()</span><div><h3 class="result-source">@result.Site</h3><p class="result-identifier">@result.Identifier</p></div></div><span class="status-pill status-@result.Status">@result.Label</span></div>
                             <p class="result-reason">@result.Reason</p>
-                            @if (IsWebUrl(result.ProfileUrl)) { <a class="result-url" href="@result.ProfileUrl" target="_blank" rel="noopener noreferrer">@result.ProfileUrl <span aria-hidden="true">↗</span></a> }
+                            @if (!registryResult && IsWebUrl(result.ProfileUrl)) { <a class="result-url" href="@result.ProfileUrl" target="_blank" rel="noopener noreferrer">@result.ProfileUrl <span aria-hidden="true">↗</span></a> }
+                            @if (registryResult)
+                            {
+                                <section class="declaration-results" aria-label="Публічні декларації НАЗК">
+                                    <div class="declaration-heading"><h4>Публічні декларації НАЗК</h4><span class="declaration-count">@(declarationTotal >= declarations.Count ? $"Показано {declarations.Count} із {declarationTotal}" : $"Показано {declarations.Count} документів")</span></div>
+                                    <p class="identity-notice">Збіг ПІБ не підтверджує особу. Відсутність декларацій не доводить, що людина не працює або не працювала в державних органах.</p>
+                                    @if (declarations.Count > 0)
+                                    {
+                                        <ul class="declaration-list" tabindex="0" aria-label="Знайдені публічні декларації">
+                                            @foreach (var declaration in declarations)
+                                            {
+                                                var metadata = new[] { ("Рік декларації", declaration.DeclarationYear), ("Тип декларації", declaration.DeclarationType), ("Тип документа", declaration.DocumentType), ("Посада", declaration.Position), ("Місце роботи", declaration.Workplace) };
+                                                <li class="declaration-item">
+                                                    <h5 class="declaration-name">@(string.IsNullOrWhiteSpace(declaration.FullName) ? "ПІБ не вказано в результаті" : declaration.FullName)</h5>
+                                                    <dl class="declaration-meta">
+                                                        @foreach (var field in metadata.Where(field => !string.IsNullOrWhiteSpace(field.Item2)))
+                                                        {
+                                                            <dt>@field.Item1</dt><dd>@field.Item2</dd>
+                                                        }
+                                                        @if (declaration.SubmittedAt.HasValue)
+                                                        {
+                                                            <dt>Подано</dt><dd><time datetime="@declaration.SubmittedAt.Value.ToString("O")" data-local-time="true">@declaration.SubmittedAt.Value.UtcDateTime.ToString("dd.MM.yyyy HH:mm:ss") UTC</time></dd>
+                                                        }
+                                                    </dl>
+                                                    @if (IsOfficialDeclarationUrl(declaration.Url, declaration.Id))
+                                                    {
+                                                        <a class="declaration-link" href="@declaration.Url" target="_blank" rel="noopener noreferrer">Відкрити декларацію НАЗК <span aria-hidden="true">↗</span></a>
+                                                    }
+                                                </li>
+                                            }
+                                        </ul>
+                                        @if (declarationTotal > declarations.Count || declarations.Count == 20)
+                                        {
+                                            <p class="declaration-limit">Показано першу сторінку документів. Повний список перевірте в офіційному реєстрі.</p>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <p class="declaration-empty">Документів для показу немає. Перегляньте причину результату та уточніть ПІБ в офіційному реєстрі.</p>
+                                    }
+                                    @if (IsOfficialRegistryUrl(result.ProfileUrl))
+                                    {
+                                        <a class="declaration-link declaration-all" href="@result.ProfileUrl" target="_blank" rel="noopener noreferrer">Усі результати в офіційному реєстрі <span aria-hidden="true">↗</span></a>
+                                    }
+                                </section>
+                            }
                             <details class="result-details"><summary>Деталі перевірки</summary><dl><dt>Статус</dt><dd>@result.Label</dd><dt>Причина</dt><dd>@result.Reason</dd><dt>Ознаки</dt><dd>@(string.IsNullOrWhiteSpace(result.Evidence) ? "Додаткових ознак немає." : result.Evidence)</dd><dt>Перевірено</dt><dd><time datetime="@result.CheckedAt?.ToString("O")" data-local-time="true">@(result.CheckedAt?.UtcDateTime.ToString("dd.MM.yyyy HH:mm:ss") ?? "Не перевірено") UTC</time></dd></dl></details>
                         </article>
                     }
@@ -71,6 +119,13 @@
 @functions {
     private static int StatusOrder(AccountStatus status) => status switch { AccountStatus.Found => 0, AccountStatus.Unconfirmed => 1, AccountStatus.Blocked => 2, AccountStatus.Error => 3, AccountStatus.Cancelled => 4, _ => 5 };
     private static bool IsWebUrl(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+    private static bool IsOfficialRegistryUrl(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri)
+        && uri.Scheme == Uri.UriSchemeHttps && uri.Port == 443 && string.IsNullOrEmpty(uri.UserInfo)
+        && uri.Host.Equals("public.nazk.gov.ua", StringComparison.OrdinalIgnoreCase);
+    private static bool IsOfficialDeclarationUrl(string? value, string? id) => IsOfficialRegistryUrl(value)
+        && Uri.TryCreate(value, UriKind.Absolute, out var uri) && Guid.TryParse(id, out var declarationId)
+        && uri.AbsolutePath.Equals("/documents/" + declarationId.ToString("D"), StringComparison.OrdinalIgnoreCase)
+        && uri.Query.Length == 0 && uri.Fragment.Length == 0;
 }
 @section Scripts {
     <script src="~/js/search.js" asp-append-version="true" defer></script>

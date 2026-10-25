@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MediaParser.Models.DBModels;
+using MediaParser.Services.Declarations;
 using Microsoft.EntityFrameworkCore;
 
 namespace MediaParser.Data;
@@ -14,7 +15,15 @@ public static class MediaSourceSeed
             var rumble = await database.MediaSources.Where(source => source.Name == "Rumble"
                 && source.LinkType == "User" && source.SearchUrl == "https://rumble.com/{0}").ToListAsync();
             foreach (var source in rumble) source.SearchUrl = "https://rumble.com/user/{0}";
-            if (rumble.Count > 0) await database.SaveChangesAsync();
+            var existing = await database.MediaSources.ToListAsync();
+            if (!existing.Any(source => source.Name == NazkDeclarationSource.Name || NazkDeclarationSource.IsSource(source)))
+                database.MediaSources.Add(new MediaSource
+                {
+                    Name = NazkDeclarationSource.Name, LinkType = "FullName",
+                    ApiUrl = NazkDeclarationSource.ApiTemplate, SearchUrl = NazkDeclarationSource.SearchTemplate,
+                    ErrorKeywordsRaw = "[]"
+                });
+            await database.SaveChangesAsync();
             return;
         }
 

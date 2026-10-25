@@ -19,7 +19,7 @@
         <div>
             <p class="eyebrow">ПЕРЕВІРКА ВІДКРИТИХ ПРОФІЛІВ</p>
             <h1>Пошук акаунтів</h1>
-            <p class="page-description">Вкажіть ідентифікатори, оберіть джерела й перегляньте результати перевірки.</p>
+            <p class="page-description">Перевірте публічні профілі або знайдіть декларації НАЗК за ПІБ. Оберіть джерела для свого запиту.</p>
         </div>
         <a asp-action="MyResults" class="text-link">Історія пошуку <span aria-hidden="true">↗</span></a>
     </header>
@@ -49,6 +49,7 @@
                     </div>
                 </fieldset>
                 <p class="field-hint" id="modeHint">Шукаємо конкретний профіль за нікнеймом.</p>
+                <p id="fullNameNotice" class="identity-notice" hidden="@(initialMode != "FullName")">Збіг ПІБ у декларації не підтверджує особу. Відсутність декларацій не доводить, що людина не працює або не працювала в державних органах.</p>
                 <div id="identifierFields" class="identifier-fields">
                     @for (var index = 0; index < identifiers.Count; index++)
                     {
@@ -87,10 +88,12 @@
                         var supported = source.Media.LinkType is "User" or "FullName";
                         var matches = source.Media.LinkType == initialMode;
                         var sourceHint = MediaParser.Classes.SourceCapabilities.GetHint(source.Media.SearchUrl);
+                        var isDeclarationSource = Uri.TryCreate(source.Media.SearchUrl, UriKind.Absolute, out var sourceUri)
+                            && sourceUri.Host.Equals("public.nazk.gov.ua", StringComparison.OrdinalIgnoreCase);
                         <label class="source-option @(!matches ? "is-incompatible" : "")" data-source-id="@source.Media.Id" data-source-name="@source.Media.Name" data-mode="@source.Media.LinkType" data-manual-supported="@(source.Media.LinkType == "User" && MediaParser.Classes.SourceCapabilities.SupportsManualCheck(source.Media.SearchUrl) ? "true" : "false")">
                             <input type="checkbox" class="source-checkbox" name="sourceIds" value="@source.Media.Id" checked="@(matches && supported)" disabled="@(!matches || !supported)" data-initial-selected="@(supported ? "true" : "false")" aria-describedby="@("sourceModeHint" + (sourceHint != null ? " sourceHint_" + source.Media.Id : string.Empty))" />
                             <span class="source-avatar" aria-hidden="true">@source.Media.Name.FirstOrDefault()</span>
-                            <span class="source-option-text"><span class="source-name">@source.Media.Name</span><span class="source-type">@(source.Media.LinkType == "FullName" ? "Пошук за ПІБ" : source.Media.LinkType == "User" ? "Профіль за нікнеймом" : "Тип не налаштовано")</span>@if (sourceHint != null) { <span class="source-hint" id="sourceHint_@source.Media.Id">@sourceHint</span> }</span>
+                            <span class="source-option-text"><span class="source-name">@source.Media.Name</span><span class="source-type">@(isDeclarationSource ? "Публічний реєстр • декларації" : source.Media.LinkType == "FullName" ? "Пошук за ПІБ" : source.Media.LinkType == "User" ? "Профіль за нікнеймом" : "Тип не налаштовано")</span>@if (sourceHint != null) { <span class="source-hint" id="sourceHint_@source.Media.Id">@sourceHint</span> }</span>
                         </label>
                     }
                 </div>
@@ -118,7 +121,7 @@
     </section>
 
     <section id="jobResults" class="results-section" aria-labelledby="resultsHeading" hidden>
-        <div class="results-heading"><div><p class="eyebrow">РЕЗУЛЬТАТИ ПЕРЕВІРКИ</p><h2 id="resultsHeading">Спочатку знайдені профілі</h2></div><div class="result-actions"><button type="button" id="retrySearch" class="btn btn-outline-secondary btn-sm" hidden>Повторити невдалі</button><a id="exportSearch" class="btn btn-outline-secondary btn-sm" hidden>Завантажити Excel <span aria-hidden="true">↓</span></a></div></div>
+        <div class="results-heading"><div><p class="eyebrow">РЕЗУЛЬТАТИ ПЕРЕВІРКИ</p><h2 id="resultsHeading">Результати пошуку</h2></div><div class="result-actions"><button type="button" id="retrySearch" class="btn btn-outline-secondary btn-sm" hidden>Повторити невдалі</button><a id="exportSearch" class="btn btn-outline-secondary btn-sm" hidden>Завантажити Excel <span aria-hidden="true">↓</span></a></div></div>
         <p id="retryNotice" class="field-hint" hidden>Повторна перевірка проблемних джерел. Попередні результати залишаються в історії.</p>
         <div class="result-counters" id="resultCounters" aria-label="Фільтр за результатом">
             <button type="button" class="result-counter is-active" data-status-filter="all" aria-pressed="true"><span>Усі перевірки</span><strong data-count="all">0</strong></button>
@@ -136,7 +139,7 @@
         <p class="results-visible-count" id="visibleResultCount" aria-live="polite"></p>
         <div id="resultList" class="result-list"></div>
         <div id="resultsEmpty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">⌕</span><h3>Нічого за цими фільтрами</h3><p>Змініть статус, джерело або текст пошуку.</p><button type="button" id="resetResultFilters" class="btn btn-outline-secondary btn-sm">Скинути фільтри</button></div>
-        <p class="result-interpretation">Статус «Не підтверджено» або обмеження доступу не означає, що акаунта немає. Відкрийте деталі, щоб побачити причину.</p>
+        <p class="result-interpretation">Статус «Не підтверджено» або обмеження доступу не означає, що акаунта чи декларацій немає. Збіг ПІБ не підтверджує особу. Відкрийте деталі, щоб побачити причину.</p>
     </section>
 
     @if (ViewData["Results"] is List<ResultsModel> legacyResults && legacyResults.Count > 0)
