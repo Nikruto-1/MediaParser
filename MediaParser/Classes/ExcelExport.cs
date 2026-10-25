@@ -60,6 +60,16 @@ namespace MediaParser.Classes
                 WriteRow(writer, row++, new[] { "Нікнейм", "Час пошуку", "Медіа", "Статус", "URL профілю" });
                 foreach (var result in results)
                 {
+                    if (result.Details?.Count > 0)
+                    {
+                        foreach (var detail in result.Details)
+                            WriteRow(writer, row++, new[]
+                            {
+                                detail.Identifier, detail.CheckedAt.ToString("yyyy-MM-dd HH:mm 'UTC'"), detail.Site,
+                                $"{detail.Label}: {detail.Reason}" + (string.IsNullOrWhiteSpace(detail.Evidence) ? "" : $" ({detail.Evidence})"), detail.ProfileUrl
+                            });
+                        continue;
+                    }
                     foreach (var mediaResult in result.Results ?? new())
                     {
                         WriteRow(writer, row++, new[]

@@ -1,145 +1,147 @@
-﻿@model MediaParser.Models.SearchIdentifiers
+@model MediaParser.Models.SearchIdentifiers
+@inject MediaParser.Services.MediaService MediaService
 @{
     ViewData["Title"] = "Пошук акаунтів";
+    var sources = MediaService.GetMediaSources().OrderBy(source => source.Media.Name).ToList();
+    var initialMode = sources.Any(source => source.IsSelected && source.Media.LinkType == "FullName")
+        && !sources.Any(source => source.IsSelected && source.Media.LinkType == "User") ? "FullName" : "User";
+    var selected = sources.Where(source => source.IsSelected && source.Media.LinkType == initialMode).ToList();
+    var identifiers = Model?.Nicknames?.Any() == true ? Model.Nicknames.Take(5).ToList() : new List<string> { string.Empty };
 }
 
-<div class="">
-    <h2 class="text-center mb-4">Пошук акаунтів у медіа</h2>
+<div id="searchWorkspace" class="search-workspace" data-active-job-id="@ViewData["ActiveJobId"]" data-start-url="@Url.Action("StartSearch", "Parser")"
+     data-progress-url="@Url.Action("SearchProgress", "Parser")" data-cancel-url="@Url.Action("CancelSearch", "Parser")"
+     data-retry-url="@Url.Action("RetrySearch", "Parser")" data-export-url="@Url.Action("ExportJob", "Parser")">
+    <header class="page-heading">
+        <div>
+            <p class="eyebrow">ПЕРЕВІРКА ВІДКРИТИХ ПРОФІЛІВ</p>
+            <h1>Пошук акаунтів</h1>
+            <p class="page-description">Вкажіть ідентифікатори, оберіть джерела й перегляньте результати перевірки.</p>
+        </div>
+        <a asp-action="MyResults" class="text-link">Історія пошуку <span aria-hidden="true">↗</span></a>
+    </header>
 
-    <!-- Вывод ошибок валидации -->
+    <div id="searchError" class="alert alert-danger" role="alert" tabindex="-1" hidden></div>
     @if (!ViewData.ModelState.IsValid)
     {
-        <div class="alert alert-danger">
-            @foreach (var error in ViewData.ModelState.Values.SelectMany(v => v.Errors))
-            {
-                <p>@error.ErrorMessage</p>
-            }
-        </div>
+        <div class="alert alert-danger" role="alert">@Html.ValidationSummary(false)</div>
     }
+    <noscript><div class="alert alert-warning">Для прогресу, вибору джерел і скасування пошуку увімкніть JavaScript.</div></noscript>
 
-    <form asp-controller="Parser" asp-action="SearchByMedia" method="post" class="container rounded">
-        <div id="nicknameFields">
-            <label asp-for="Profile" class="form-label">Профіль браузера застосунку (необов'язково)</label>
-            <input asp-for="Profile" type="text" class="form-control" placeholder="Default" />
-            <small class="form-text text-muted">Використовується окремий профіль MediaParser. Залиште порожнім для Default.</small>
+    <div class="selected-summary" aria-live="polite" aria-atomic="true">
+        <div class="selected-summary-label"><span class="selection-dot" aria-hidden="true"></span>Обрано джерел <strong id="selectedSourceCount">@selected.Count</strong></div>
+        <p id="selectedSourceNames">@(selected.Count > 0 ? string.Join(", ", selected.Select(source => source.Media.Name)) : "Оберіть джерела нижче, щоб почати перевірку.")</p>
+    </div>
 
-            <label class="form-label">👤 Введіть нікнейм(и) або ПІБ</label>
-
-            @if (Model?.Nicknames != null && Model.Nicknames.Any())
-            {
-                @for (int i = 0; i < Model.Nicknames.Count; i++)
-                {
-                    <div class="input-group mb-2 nickname-group" data-index="@i">
-                        <input type="text" class="form-control" name="Nicknames[@i]" value="@Model.Nicknames[i]" placeholder="Введіть ідентифікатор...">
-                        <button type="button" class="btn btn-danger remove-field">❌</button>
+    <form id="searchForm" asp-action="SearchByMedia" method="post" class="search-form">
+        <fieldset id="searchSettings" class="search-settings">
+            <legend class="visually-hidden">Налаштування пошуку</legend>
+            <section class="workspace-panel identifiers-panel" aria-labelledby="identifiersHeading">
+                <div class="section-heading"><span class="step-number" aria-hidden="true">01</span><h2 id="identifiersHeading">Що шукаємо</h2></div>
+                <fieldset class="mode-fieldset">
+                    <legend class="input-label">Тип ідентифікатора</legend>
+                    <div class="mode-switch">
+                        <label><input type="radio" name="mode" value="User" checked="@(initialMode == "User")" /><span>Нікнейм</span></label>
+                        <label><input type="radio" name="mode" value="FullName" checked="@(initialMode == "FullName")" /><span>Ім’я та прізвище</span></label>
                     </div>
-                }
-            }
-            else
-            {
-                <div class="input-group mb-2 nickname-group" data-index="0">
-                    <input type="text" class="form-control" name="Nicknames[0]" placeholder="Введіть ідентифікатор...">
-                    <button type="button" class="btn btn-danger remove-field">❌</button>
+                </fieldset>
+                <p class="field-hint" id="modeHint">Шукаємо конкретний профіль за нікнеймом.</p>
+                <div id="identifierFields" class="identifier-fields">
+                    @for (var index = 0; index < identifiers.Count; index++)
+                    {
+                        <div class="identifier-row">
+                            <div class="identifier-input">
+                                <label class="input-label" for="identifier_@index">Ідентифікатор @(index + 1)</label>
+                                <input id="identifier_@index" name="Nicknames[@index]" value="@identifiers[index]" class="form-control identifier-value" required maxlength="100" autocomplete="off" spellcheck="false" placeholder="Наприклад, nickname" aria-describedby="identifierHint" />
+                            </div>
+                            <button type="button" class="icon-button remove-identifier" aria-label="Видалити ідентифікатор @(index + 1)" title="Видалити ідентифікатор" hidden="@(identifiers.Count == 1)"><span aria-hidden="true">×</span></button>
+                        </div>
+                    }
                 </div>
-            }
-        </div>
+                <p class="field-hint" id="identifierHint">До 5 ідентифікаторів за один пошук. Дублікати перевіряються один раз.</p>
+                <button id="addIdentifier" type="button" class="btn btn-outline-secondary btn-sm"><span aria-hidden="true">＋</span> Додати ідентифікатор</button>
+            </section>
 
-        <button type="button" class="btn btn-success w-100 mb-2" id="addNickname">➕ Додати ідентифікатор</button>
-        <button type="submit" class="btn btn-primary w-100">🔎 Шукати</button>
+            <section class="workspace-panel sources-panel" aria-labelledby="sourcesHeading">
+                <div class="section-heading"><span class="step-number" aria-hidden="true">02</span><h2 id="sourcesHeading">Де шукаємо</h2><span class="subtle-count">@sources.Count джерел</span></div>
+                <div class="source-toolbar">
+                    <div class="source-search">
+                        <label for="sourceSearch" class="visually-hidden">Знайти джерело за назвою</label>
+                        <input id="sourceSearch" type="search" class="form-control" placeholder="Знайти джерело…" autocomplete="off" />
+                    </div>
+                    <div class="source-bulk-actions"><button type="button" id="selectVisibleSources" class="text-button">Обрати видимі</button><button type="button" id="clearSources" class="text-button">Скинути</button></div>
+                </div>
+                <p id="sourceModeHint" class="field-hint">Доступні джерела для вибраного типу ідентифікатора.</p>
+                <div id="sourceList" class="source-grid">
+                    @foreach (var source in sources)
+                    {
+                        var supported = source.Media.LinkType is "User" or "FullName";
+                        var matches = source.Media.LinkType == initialMode;
+                        <label class="source-option @(!matches ? "is-incompatible" : "")" data-source-id="@source.Media.Id" data-source-name="@source.Media.Name" data-mode="@source.Media.LinkType">
+                            <input type="checkbox" class="source-checkbox" name="sourceIds" value="@source.Media.Id" checked="@(source.IsSelected && matches)" disabled="@(!matches || !supported)" data-initial-selected="@(source.IsSelected ? "true" : "false")" aria-describedby="sourceModeHint" />
+                            <span class="source-avatar" aria-hidden="true">@source.Media.Name.FirstOrDefault()</span>
+                            <span class="source-option-text"><span class="source-name">@source.Media.Name</span><span class="source-type">@(source.Media.LinkType == "FullName" ? "Пошук за ПІБ" : source.Media.LinkType == "User" ? "Профіль за нікнеймом" : "Тип не налаштовано")</span></span>
+                        </label>
+                    }
+                </div>
+                <div id="sourcesEmpty" class="inline-empty" hidden>Джерел із такою назвою немає. Спробуйте інший запит.</div>
+                @if (sources.Count == 0)
+                {
+                    <div class="inline-empty">Ще немає джерел. <a asp-controller="Media" asp-action="Create">Додати джерело</a></div>
+                }
+            </section>
+        </fieldset>
+        <div class="search-submit-row">
+            <p id="searchReadyHint" class="field-hint">Оберіть щонайменше одне сумісне джерело.</p>
+            <button id="startSearch" type="submit" class="btn btn-primary btn-search" disabled="@(selected.Count == 0)"><span aria-hidden="true">↗</span> Почати перевірку</button>
+        </div>
     </form>
 
+    <section id="searchProgress" class="workspace-panel progress-panel" aria-labelledby="progressHeading" hidden>
+        <div class="progress-topline"><div><p class="eyebrow" id="progressEyebrow">ПЕРЕВІРКА ТРИВАЄ</p><h2 id="progressHeading">Готуємо пошук</h2></div><button type="button" id="cancelSearch" class="btn btn-outline-danger btn-sm">Зупинити пошук</button></div>
+        <div class="progress-summary"><span id="progressCurrent">Готуємо чергу перевірок…</span><strong id="progressCount">0 / 0</strong></div>
+        <progress id="searchProgressBar" max="100" value="0" aria-label="Прогрес перевірки джерел">0%</progress>
+        <p id="progressAnnouncement" class="field-hint" role="status" aria-live="polite" aria-atomic="true"></p>
+        <div id="connectionNotice" class="connection-notice" role="status" hidden><span id="connectionMessage"></span><button type="button" id="reconnectSearch" class="text-button">Перевірити зараз</button></div>
+    </section>
 
-    @if (Model != null && ViewData["Results"] is List<ResultsModel> resultsList)
+    <section id="jobResults" class="results-section" aria-labelledby="resultsHeading" hidden>
+        <div class="results-heading"><div><p class="eyebrow">РЕЗУЛЬТАТИ ПЕРЕВІРКИ</p><h2 id="resultsHeading">Спочатку знайдені профілі</h2></div><div class="result-actions"><button type="button" id="retrySearch" class="btn btn-outline-secondary btn-sm" hidden>Повторити невдалі</button><a id="exportSearch" class="btn btn-outline-secondary btn-sm" hidden>Завантажити Excel <span aria-hidden="true">↓</span></a></div></div>
+        <p id="retryNotice" class="field-hint" hidden>Повторна перевірка проблемних джерел. Попередні результати залишаються в історії.</p>
+        <div class="result-counters" id="resultCounters" aria-label="Фільтр за результатом">
+            <button type="button" class="result-counter is-active" data-status-filter="all" aria-pressed="true"><span>Усі перевірки</span><strong data-count="all">0</strong></button>
+            <button type="button" class="result-counter counter-found" data-status-filter="found" aria-pressed="false"><span>Знайдено</span><strong data-count="found">0</strong></button>
+            <button type="button" class="result-counter" data-status-filter="notfound" aria-pressed="false"><span>Не знайдено</span><strong data-count="notfound">0</strong></button>
+            <button type="button" class="result-counter counter-uncertain" data-status-filter="uncertain" aria-pressed="false"><span>Потребують перевірки</span><strong data-count="uncertain">0</strong></button>
+            <button type="button" class="result-counter" data-status-filter="failed" aria-pressed="false"><span>Помилки / зупинено</span><strong data-count="failed">0</strong></button>
+        </div>
+        <div class="result-filters">
+            <div><label for="resultStatus" class="input-label">Статус</label><select id="resultStatus" class="form-select"><option value="all">Усі статуси</option><option value="found">Знайдено</option><option value="notfound">Не знайдено</option><option value="uncertain">Потребують перевірки</option><option value="blocked">Доступ обмежено</option><option value="unconfirmed">Не підтверджено</option><option value="error">Помилка</option><option value="cancelled">Зупинено</option><option value="failed">Помилки / зупинено</option></select></div>
+            <div><label for="resultSite" class="input-label">Джерело</label><select id="resultSite" class="form-select"><option value="all">Усі джерела</option></select></div>
+            <div class="result-text-filter"><label for="resultText" class="input-label">Пошук у результатах</label><input id="resultText" type="search" class="form-control" placeholder="Джерело, ідентифікатор або причина…" /></div>
+        </div>
+        <p class="results-visible-count" id="visibleResultCount" aria-live="polite"></p>
+        <div id="resultList" class="result-list"></div>
+        <div id="resultsEmpty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">⌕</span><h3>Нічого за цими фільтрами</h3><p>Змініть статус, джерело або текст пошуку.</p><button type="button" id="resetResultFilters" class="btn btn-outline-secondary btn-sm">Скинути фільтри</button></div>
+        <p class="result-interpretation">Статус «Не підтверджено» або обмеження доступу не означає, що акаунта немає. Відкрийте деталі, щоб побачити причину.</p>
+    </section>
+
+    @if (ViewData["Results"] is List<ResultsModel> legacyResults && legacyResults.Count > 0)
     {
-        <div class="mb-4 mt-4 text-center">
-            <!-- Кнопка для экспорта в Excel -->
-            <form asp-controller="Parser" asp-action="ExportExcel" method="post">
-                <input type="hidden" name="isExportLastSearch" value="true" />
-                <button type="submit" class="btn btn-success">
-                    📊 Завантажити в Excel
-                </button>
-            </form>
-        </div>
-
-        <div class="mt-4">
-            <h3>Результати пошуку:</h3>
-
-            @foreach (var result in resultsList)
+        <section class="workspace-panel mt-4" aria-labelledby="legacyHeading"><h2 id="legacyHeading">Результати попередньої перевірки</h2><p class="field-hint">Цей пошук виконано через попередню форму.</p>
+            @foreach (var result in legacyResults)
             {
-                <div class="mb-3">
-                    <h5 class="fw-bold">🔍 Нікнейм: @result.Nickname</h5>
-
-                    @if (result.Results.Any())
-                    {
-                        <ul class="list-group">
-                            @foreach (var dictionary in result.Results)
-                            {
-                                <li class="list-group-item d-flex flex-column justify-content-between align-items-start">
-                                    <div class="w-100 mb-2">
-                                        <strong>@dictionary.Key</strong>
-                                    </div>
-                                    @if (!string.IsNullOrEmpty(dictionary.Value.ProfileUrl))
-                                    {
-                                        <div class="w-100 mb-2">
-                                            <a href="@dictionary.Value.ProfileUrl" target="_blank" rel="noopener noreferrer" class="text-decoration-none">
-                                                @dictionary.Value.ProfileUrl
-                                            </a>
-                                        </div>
-                                    }
-                                    <span class="badge bg-@(dictionary.Value.Status.Contains("✅") ? "success" : dictionary.Value.Status.Contains("⚠️") ? "warning" : "danger")">
-                                        @dictionary.Value.Status
-                                    </span>
-                                </li>
-                            }
-                        </ul>
-                    }
-                    else
-                    {
-                        <p class="text-muted">⚠️ Немає результатів для цього нікнейму.</p>
-                    }
-                </div>
+                <h3 class="h6 mt-3">@result.Nickname</h3>
+                @foreach (var entry in result.Results)
+                {
+                    <p><strong>@entry.Key</strong> — @entry.Value.Status</p>
+                }
             }
-        </div>
+            <a asp-action="MyResults" class="text-link">Відкрити історію пошуку</a>
+        </section>
     }
-
-
 </div>
+
 @section Scripts {
-<script>
-    $(document).ready(function () {
-        function updateIndexes() {
-            $("#nicknameFields .nickname-group").each(function (index) {
-                $(this).attr("data-index", index);
-                $(this).find("input").attr("name", "Nicknames[" + index + "]");
-            });
-
-            // Проверяем количество полей и скрываем/показываем кнопку добавления
-            if ($("#nicknameFields .nickname-group").length >= 5) {
-                $("#addNickname").hide();
-            } else {
-                $("#addNickname").show();
-            }
-        }
-
-        $("#addNickname").click(function () {
-            if ($("#nicknameFields .nickname-group").length < 5) {
-                let newField = `
-                        <div class="input-group mb-2 nickname-group">
-                                <input type="text" class="form-control" placeholder="Введіть ідентифікатор...">
-                            <button type="button" class="btn btn-danger remove-field">❌</button>
-                        </div>
-                    `;
-                $("#nicknameFields").append(newField);
-                updateIndexes();
-            }
-        });
-
-        $(document).on("click", ".remove-field", function () {
-            $(this).closest(".nickname-group").remove();
-            updateIndexes();
-        });
-
-        updateIndexes();
-    });
-</script>
+    <script src="~/js/search.js" asp-append-version="true" defer></script>
 }

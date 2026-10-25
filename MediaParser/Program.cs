@@ -1,5 +1,6 @@
 using MediaParser.Data;
 using MediaParser.IRepositories;
+using MediaParser.Models;
 using MediaParser.Repositories;
 using MediaParser.Services;
 using MediaParser.Services.DBServices;
@@ -29,6 +30,11 @@ builder.Services.AddScoped<ResultsRepository>();
 builder.Services.AddScoped<MediaService>();
 builder.Services.AddScoped<MediaSourceService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.Configure<SearchJobOptions>(builder.Configuration.GetSection("SearchJobs"));
+builder.Services.AddSingleton<IAccountChecker, AccountChecker>();
+builder.Services.AddSingleton<SearchJobService>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<SearchJobService>());
 
 var appData = Path.Combine(builder.Environment.ContentRootPath, "App_Data");
 Directory.CreateDirectory(appData);

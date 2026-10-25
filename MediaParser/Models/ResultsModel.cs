@@ -5,5 +5,7 @@
         public Dictionary<string, (string Status, string ProfileUrl)> Results { get; set; } = new();
         public string Nickname { get; set; } = string.Empty;
         public DateTime? Date { get; set; }
+        public Guid? JobId { get; set; }
+        public List<SearchResultItem> Details { get; set; } = new();
     }
 }

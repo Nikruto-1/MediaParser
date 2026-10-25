@@ -36,6 +36,27 @@ namespace MediaParser.Repositories
             Session.Remove("LastResults");
         }
 
+        public void SaveJob(SearchJobSnapshot job)
+        {
+            if (job.State is not ("completed" or "cancelled" or "failed")) return;
+            if (GetListResults().Any(result => result.JobId == job.Id)) return;
+            AddResults(ToResults(job));
+        }
+
+        public static List<ResultsModel> ToResults(SearchJobSnapshot job) => job.Results
+            .GroupBy(result => result.Identifier).Select(group => new ResultsModel
+            {
+                Nickname = group.Key,
+                JobId = job.Id,
+                Date = job.StartedAt.UtcDateTime,
+                Details = group.ToList(),
+                Results = group.GroupBy(result => result.Site).ToDictionary(site => site.Key, site =>
+                {
+                    var row = site.Last();
+                    return ($"{row.Label}: {row.Reason}", row.ProfileUrl);
+                })
+            }).ToList();
+
         private List<ResultsModel> ReadResults(string key)
         {
             var data = Session.GetString(key);
@@ -47,6 +68,7 @@ namespace MediaParser.Repositories
                 foreach (var result in results)
                 {
                     result.Nickname ??= string.Empty;
+                    result.Details ??= new();
                     result.Results = (result.Results ?? new()).ToDictionary(pair => pair.Key,
                         pair => (pair.Value.Status ?? string.Empty, pair.Value.ProfileUrl ?? string.Empty));
                 }

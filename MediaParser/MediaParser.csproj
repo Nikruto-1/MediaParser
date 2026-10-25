@@ -9,7 +9,7 @@
   <ItemGroup>
     <Folder Include="Models\ViewModels\" />
     <Content Update="Data\media-sources.json" CopyToOutputDirectory="PreserveNewest" />
-    <Content Remove="App_Data\**;appsettings.Local.json;response.html" />
+    <Content Remove="App_Data\**;.cache\**;appsettings.Local.json;response.html" />
   </ItemGroup>
 
   <ItemGroup>

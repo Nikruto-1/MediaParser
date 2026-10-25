@@ -55,6 +55,12 @@ namespace MediaParser.Services
         public List<MediaSource> GetSelectedMedia() => GetMediaSources()
             .Where(source => source.IsSelected).Select(source => source.Media).ToList();
 
+        public void SetSelectedIds(IEnumerable<int> selectedIds)
+        {
+            var ids = selectedIds.ToHashSet();
+            Save(GetMediaSources().Select(source => (source.Media, ids.Contains(source.Media.Id))).ToList());
+        }
+
         private void Save(List<(MediaSource Media, bool IsSelected)> sources) =>
             Session.SetString(SessionKey, JsonConvert.SerializeObject(sources));
     }

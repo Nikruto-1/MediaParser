@@ -20,3 +20,15 @@ jobs:
       - run: dotnet run --project tests/algorithm/AlgorithmRegressionTests.csproj
       - run: dotnet run --project tests/media/MediaParser.MediaTests.csproj
       - run: dotnet run --project tests/storage/MediaParser.StorageTests.csproj
+      - run: dotnet run --project tests/jobs/MediaParser.JobTests.csproj
+      - name: HTTP integration
+        shell: bash
+        run: |
+          ASPNETCORE_ENVIRONMENT=Development dotnet run --project MediaParser/MediaParser.csproj --no-build --no-launch-profile --urls http://localhost:5125 > /tmp/mediaparser.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://localhost:5125/Parser/SearchByMedia > /dev/null; then break; fi
+            sleep 1
+          done
+          python3 tests/http/smoke.py

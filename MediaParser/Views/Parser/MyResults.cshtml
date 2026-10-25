@@ -1,59 +1,77 @@
-﻿@model List<ResultsModel>
+@model List<ResultsModel>
+@{
+    ViewData["Title"] = "Історія пошуку";
+    var history = (Model ?? new()).OrderByDescending(result => result.Date).ToList();
+    var details = history.SelectMany(result => result.Details ?? new()).ToList();
+    var legacyCount = history.Where(result => result.Details?.Count is not > 0).Sum(result => result.Results.Count);
+    var count = details.Count + legacyCount;
+    var sites = details.Select(result => result.Site).Concat(history.Where(result => result.Details?.Count is not > 0).SelectMany(result => result.Results.Keys)).Distinct().OrderBy(site => site).ToList();
+}
 
-@if (Model != null && Model.Count != 0)
-{
-    <div class="mb-4 text-center">
-        <!-- Кнопка для экспорта в Excel -->
-        <form asp-controller="Parser" asp-action="ExportExcel" method="post">
-            <button type="submit" class="btn btn-success">
-                📊 Завантажити в Excel
-            </button>
-        </form>
-    </div>
-
-    <div class="mt-4">
-        <h3>Результати пошуку:</h3>
-
-        @foreach (var result in Model)
+<div id="historyWorkspace">
+    <header class="page-heading"><div><p class="eyebrow">ВАШІ ПОПЕРЕДНІ ПЕРЕВІРКИ</p><h1>Історія пошуку</h1><p class="page-description">Результати поточної сесії з причинами, ознаками й часом перевірки.</p></div><a asp-action="SearchByMedia" class="btn btn-primary">Новий пошук <span aria-hidden="true">↗</span></a></header>
+    @if (count > 0)
+    {
+        <div class="results-heading"><p class="field-hint mb-0">Збережено @count результатів. Знайдені профілі показано першими в кожній перевірці.</p><form asp-action="ExportExcel" method="post"><button type="submit" class="btn btn-outline-secondary btn-sm">Уся історія в Excel <span aria-hidden="true">↓</span></button></form></div>
+        @if (legacyCount > 0)
         {
-            <div class="mb-3">
-                <h5 class="fw-bold">🔍 Нікнейм: @result.Nickname, час пошуку: @result.Date</h5>
-
-                @if (result.Results.Any())
+            <p class="history-legacy-note">@legacyCount старих результатів містять лише текст перевірки. Для них збережено початкове повідомлення.</p>
+        }
+        <div id="historyCounters" class="result-counters" aria-label="Фільтр за результатом">
+            <button type="button" class="result-counter is-active" data-status-filter="all" aria-pressed="true"><span>Усі перевірки</span><strong data-count="all">@count</strong></button>
+            <button type="button" class="result-counter counter-found" data-status-filter="found" aria-pressed="false"><span>Знайдено</span><strong data-count="found">@details.Count(result => result.Outcome == AccountStatus.Found)</strong></button>
+            <button type="button" class="result-counter" data-status-filter="notfound" aria-pressed="false"><span>Не знайдено</span><strong data-count="notfound">@details.Count(result => result.Outcome == AccountStatus.NotFound)</strong></button>
+            <button type="button" class="result-counter counter-uncertain" data-status-filter="uncertain" aria-pressed="false"><span>Потребують перевірки</span><strong data-count="uncertain">@details.Count(result => result.Outcome is AccountStatus.Unconfirmed or AccountStatus.Blocked)</strong></button>
+            <button type="button" class="result-counter" data-status-filter="failed" aria-pressed="false"><span>Помилки / зупинено</span><strong data-count="failed">@details.Count(result => result.Outcome is AccountStatus.Error or AccountStatus.Cancelled)</strong></button>
+        </div>
+        <div class="result-filters">
+            <div><label for="historyStatus" class="input-label">Статус</label><select id="historyStatus" class="form-select"><option value="all">Усі статуси</option><option value="found">Знайдено</option><option value="notfound">Не знайдено</option><option value="uncertain">Потребують перевірки</option><option value="blocked">Доступ обмежено</option><option value="unconfirmed">Не підтверджено</option><option value="error">Помилка</option><option value="cancelled">Зупинено</option><option value="failed">Помилки / зупинено</option><option value="legacy">Старі текстові результати</option></select></div>
+            <div><label for="historySite" class="input-label">Джерело</label><select id="historySite" class="form-select"><option value="all">Усі джерела</option>@foreach (var site in sites) { <option value="@site">@site</option> }</select></div>
+            <div class="result-text-filter"><label for="historyText" class="input-label">Пошук в історії</label><input id="historyText" class="form-control" type="search" placeholder="Джерело, ідентифікатор або причина…" /></div>
+        </div>
+        <p id="historyVisibleCount" class="results-visible-count" aria-live="polite">Показано @count результатів</p>
+        @foreach (var search in history)
+        {
+            var typed = search.Details?.Count > 0;
+            <section class="history-search">
+                <div class="history-search-heading"><div><h2>@search.Nickname</h2><p>@if (search.Date.HasValue) { <time datetime="@search.Date.Value.ToString("O")" data-local-time="@(typed ? "true" : null)">@search.Date.Value.ToString("dd.MM.yyyy HH:mm")@(typed ? " UTC" : "")</time> } else { <span>Час не збережено</span> }<span> · @(typed ? search.Details!.Count : search.Results.Count) результатів</span></p></div>
+                    @if (search.JobId.HasValue) { <a asp-action="ExportJob" asp-route-id="@search.JobId" class="text-link">Ця перевірка в Excel <span aria-hidden="true">↓</span></a> }
+                </div>
+                <div class="result-list">
+                @if (typed)
                 {
-                    <ul class="list-group">
-                        @foreach (var dictionary in result.Results)
-                        {
-                            <li class="list-group-item d-flex flex-column justify-content-between align-items-start">
-                                <div class="w-100 mb-2">
-                                    <strong>@dictionary.Key</strong>
-                                </div>
-                                @if (!string.IsNullOrEmpty(dictionary.Value.ProfileUrl))
-                                {
-                                    <div class="w-100 mb-2">
-                                        <a href="@dictionary.Value.ProfileUrl" target="_blank" rel="noopener noreferrer" class="text-decoration-none">
-                                            @dictionary.Value.ProfileUrl
-                                        </a>
-                                    </div>
-                                }
-                                <span class="badge bg-@(dictionary.Value.Status.Contains("✅") ? "success" : dictionary.Value.Status.Contains("⚠️") ? "warning" : "danger")">
-                                    @dictionary.Value.Status
-                                </span>
-                            </li>
-                        }
-                    </ul>
+                    @foreach (var result in search.Details!.OrderBy(result => StatusOrder(result.Outcome)).ThenBy(result => result.Site))
+                    {
+                        <article class="result-card status-@result.Status" data-result-card data-status="@result.Status" data-site="@result.Site">
+                            <div class="result-card-heading"><div class="result-identity"><span class="source-avatar" aria-hidden="true">@result.Site.FirstOrDefault()</span><div><h3 class="result-source">@result.Site</h3><p class="result-identifier">@result.Identifier</p></div></div><span class="status-pill status-@result.Status">@result.Label</span></div>
+                            <p class="result-reason">@result.Reason</p>
+                            @if (IsWebUrl(result.ProfileUrl)) { <a class="result-url" href="@result.ProfileUrl" target="_blank" rel="noopener noreferrer">@result.ProfileUrl <span aria-hidden="true">↗</span></a> }
+                            <details class="result-details"><summary>Деталі перевірки</summary><dl><dt>Статус</dt><dd>@result.Label</dd><dt>Причина</dt><dd>@result.Reason</dd><dt>Ознаки</dt><dd>@(string.IsNullOrWhiteSpace(result.Evidence) ? "Додаткових ознак немає." : result.Evidence)</dd><dt>Перевірено</dt><dd><time datetime="@result.CheckedAt.ToString("O")" data-local-time="true">@result.CheckedAt.UtcDateTime.ToString("dd.MM.yyyy HH:mm:ss") UTC</time></dd></dl></details>
+                        </article>
+                    }
                 }
                 else
                 {
-                    <p class="text-muted">⚠️ Немає результатів для цього нікнейму.</p>
+                    @foreach (var result in search.Results.OrderBy(result => result.Key))
+                    {
+                        <article class="result-card status-legacy" data-result-card data-status="legacy" data-site="@result.Key"><div class="result-card-heading"><div class="result-identity"><span class="source-avatar" aria-hidden="true">@result.Key.FirstOrDefault()</span><div><h3 class="result-source">@result.Key</h3><p class="result-identifier">@search.Nickname</p></div></div><span class="status-pill">Попередній результат</span></div><p class="result-reason">@result.Value.Status</p>@if (IsWebUrl(result.Value.ProfileUrl)) { <a class="result-url" href="@result.Value.ProfileUrl" target="_blank" rel="noopener noreferrer">@result.Value.ProfileUrl <span aria-hidden="true">↗</span></a> }</article>
+                    }
                 }
-            </div>
+                </div>
+            </section>
         }
-    </div>
+        <div id="historyEmpty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">⌕</span><h2>Немає результатів за цими фільтрами</h2><p>Спробуйте інший статус, джерело або текст.</p><button type="button" id="resetHistoryFilters" class="btn btn-outline-secondary btn-sm">Скинути фільтри</button></div>
+    }
+    else
+    {
+        <div class="empty-state"><span class="empty-symbol" aria-hidden="true">⌕</span><h2>Історія починається з першого пошуку</h2><p>Перевірте нікнейм або ім’я у вибраних джерелах. Результати з’являться тут.</p><a asp-action="SearchByMedia" class="btn btn-primary">Почати перевірку <span aria-hidden="true">↗</span></a></div>
+    }
+</div>
+
+@functions {
+    private static int StatusOrder(AccountStatus status) => status switch { AccountStatus.Found => 0, AccountStatus.Unconfirmed => 1, AccountStatus.Blocked => 2, AccountStatus.Error => 3, AccountStatus.Cancelled => 4, _ => 5 };
+    private static bool IsWebUrl(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 }
-else
-{
-    <div class="alert alert-info text-center" role="alert">
-        <strong>Ви поки що не шукали у медія</strong><br>
-    </div>
+@section Scripts {
+    <script src="~/js/search.js" asp-append-version="true" defer></script>
 }
