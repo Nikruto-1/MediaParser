@@ -421,6 +421,13 @@
             const percent = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
             byId("progressCount").textContent = `${completed} / ${total}`;
             byId("interactiveNotice").hidden = terminal || !next.isInteractive || next.state !== "running";
+            const captchaProgress = byId("automaticCaptchaProgress");
+            captchaProgress.hidden = !next.automaticCaptcha && !next.progressMessage;
+            captchaProgress.textContent = next.progressMessage || (next.automaticCaptcha
+                ? (terminal
+                    ? `Для цієї перевірки було ввімкнено 2Captcha. Повтор невдалих успадковує опцію та отримує новий ліміт до ${workspace.dataset.captchaTaskLimit || "3"} платних завдань.`
+                    : `2Captcha увімкнено для цього пошуку: до ${workspace.dataset.captchaTaskLimit || "3"} платних завдань. Запити створюються лише для підтримуваних капч.`)
+                : "");
             const progress = byId("searchProgressBar");
             progress.value = percent;
             progress.textContent = `${percent}%`;
@@ -469,6 +476,7 @@
             byId("progressEyebrow").textContent = "ПЕРЕВІРКА ТРИВАЄ";
             byId("progressCurrent").textContent = "Передаємо запит до черги перевірок…";
             byId("interactiveNotice").hidden = true;
+            byId("automaticCaptchaProgress").hidden = true;
             cancelButton.hidden = true;
             try {
                 const next = await requestJson(url, "POST", body);
@@ -513,7 +521,8 @@
             const sourceIds = selectedSources().map(source => Number(source.dataset.sourceId));
             if (!identifiers.length) { showError("Вкажіть хоча б один ідентифікатор.", true); return; }
             if (!sourceIds.length) { showError("Оберіть хоча б одне джерело для цього режиму.", true); return; }
-            beginSearch(workspace.dataset.startUrl, { identifiers, mode, sourceIds });
+            const automaticCaptcha = byId("automaticCaptcha").checked && !byId("automaticCaptcha").disabled;
+            beginSearch(workspace.dataset.startUrl, { identifiers, mode, sourceIds, automaticCaptcha });
         });
         cancelButton.addEventListener("click", async () => {
             if (!activeId || !snapshot || terminalStates.has(snapshot.state) || cancelRequested) return;

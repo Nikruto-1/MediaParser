@@ -80,6 +80,14 @@ button { touch-action: manipulation; }
 .identifier-row { display: flex; align-items: flex-end; gap: 8px; }
 .identifier-input { min-width: 0; flex: 1; }
 .identifier-fields+.field-hint { margin-top: 10px; margin-bottom: 17px; }
+.captcha-option { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+.captcha-toggle { display: flex; align-items: flex-start; gap: 9px; font-size: .79rem; font-weight: 650; color: var(--ink); cursor: pointer; }
+.captcha-toggle input { accent-color: var(--accent); width: 16px; height: 16px; flex-shrink: 0; margin-top: 3px; }
+.captcha-option .field-hint { margin: 9px 0 7px 25px; font-size: .72rem; }
+.captcha-availability { margin: 0 0 0 25px; color: #536d4f; font-size: .7rem; line-height: 1.55; }
+.captcha-option.is-unavailable .captcha-toggle { cursor: default; color: #697769; }
+.captcha-option.is-unavailable .captcha-availability { color: #6b7567; }
+.captcha-progress { margin: 13px 0 0; padding: 10px 13px; border-left: 3px solid #8da580; border-radius: 4px; background: #f2f6ee; color: #4d6546; font-size: .77rem; overflow-wrap: anywhere; }
 .icon-button { display: inline-flex; justify-content: center; align-items: center; width: 42px; min-width: 42px; height: 44px; color: #68776b; background: #fff; border: 1px solid var(--line); border-radius: 8px; font-size: 1.35rem; }
 .icon-button:hover { background: #fcf0ec; color: var(--danger); border-color: #e4bfb5; }
 .btn { display: inline-flex; justify-content: center; align-items: center; gap: 8px; min-height: 43px; border-radius: 8px; padding: 10px 17px; font-size: .85rem; font-weight: 600; line-height: 1.35; border: 1px solid transparent; }

@@ -125,10 +125,16 @@ try:
         sources.append((kind,int(match.group(1))))
     ids = dict(sources)
     print('PASS Temporary API sources appear in inline selection')
+    captcha_input = re.search(r'<input[^>]+id="automaticCaptcha"[^>]*>', page.decode())
+    assert captcha_input, 'Automatic CAPTCHA option missing'
+    if 'disabled' in captcha_input.group(0):
+        assert api('/Parser/StartSearch',{'identifiers':['fixture_user'],'mode':'User','sourceIds':[ids['ok']],'automaticCaptcha':True},csrf=csrf)[0] == 400
+        print('PASS Unconfigured paid CAPTCHA cannot be enabled by a crafted request')
     status, job = api('/Parser/StartSearch',{'identifiers':['fixture_user'],'mode':'User','sourceIds':[ids[k] for k in ['ok','missing','blocked','error']]},csrf=csrf)
     assert status == 202
     validate_planned(job)
     assert not job['isInteractive'] and job['completed'] == 0 and job['results'] == []
+    assert not job['automaticCaptcha'], 'A normal search unexpectedly enabled paid CAPTCHA'
     assert all(row['status'] == 'pending' for row in job['plannedResults']), 'Admission response does not expose every selected source as pending'
     job = finish(job['id'])
     assert job['completed'] == job['total'] == 4

@@ -4,6 +4,7 @@ using MediaParser.Models;
 using MediaParser.Repositories;
 using MediaParser.Services;
 using MediaParser.Services.DBServices;
+using MediaParser.Services.Captcha;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -32,6 +33,14 @@ builder.Services.AddScoped<MediaSourceService>();
 builder.Services.AddScoped<IUnitOfWork, UnitOfWork>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.Configure<SearchJobOptions>(builder.Configuration.GetSection("SearchJobs"));
+builder.Services.AddOptions<CaptchaOptions>().Bind(builder.Configuration.GetSection("Captcha"))
+    .Validate(options => options.MaxTasksPerSearch is >= 1 and <= 10, "Captcha MaxTasksPerSearch must be between 1 and 10.")
+    .Validate(options => options.TimeoutSeconds is >= 15 and <= 180, "Captcha TimeoutSeconds must be between 15 and 180.")
+    .Validate(options => options.PollIntervalSeconds is >= 5 and <= 30, "Captcha PollIntervalSeconds must be between 5 and 30.")
+    .ValidateOnStart();
+builder.Services.AddHttpClient<ICaptchaSolver, TwoCaptchaClient>().ConfigurePrimaryHttpMessageHandler(() =>
+    new SocketsHttpHandler { AllowAutoRedirect = false, PooledConnectionLifetime = TimeSpan.FromMinutes(2) });
+builder.Services.AddSingleton<ICaptchaAutomation, BrowserCaptchaAutomation>();
 builder.Services.AddSingleton<IAccountChecker, AccountChecker>();
 builder.Services.AddSingleton<SearchJobService>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<SearchJobService>());

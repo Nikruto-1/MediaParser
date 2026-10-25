@@ -7,6 +7,7 @@ public sealed class SearchRequest
     public List<string> Identifiers { get; set; } = new();
     public string Mode { get; set; } = "User";
     public List<int> SourceIds { get; set; } = new();
+    public bool AutomaticCaptcha { get; set; }
 }
 
 // Work items stay on the server; source credentials never enter a progress response.
@@ -27,7 +28,8 @@ public sealed record SearchResultItem(int SiteId, string Site, string Identifier
 public sealed record SearchJobSnapshot(Guid Id, string State, int Total, int Completed,
     string? CurrentSite, string? CurrentIdentifier, IReadOnlyList<SearchResultItem> Results,
     bool CanRetry, string? Error, bool CancellationRequested, DateTimeOffset StartedAt,
-    IReadOnlyList<SearchResultItem>? PlannedResults = null, bool IsInteractive = false);
+    IReadOnlyList<SearchResultItem>? PlannedResults = null, bool IsInteractive = false,
+    bool AutomaticCaptcha = false, string? ProgressMessage = null);
 
 public sealed record SearchJobStartResult(SearchJobSnapshot? Job, string? Error, int StatusCode);
 

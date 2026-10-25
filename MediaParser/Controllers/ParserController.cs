@@ -35,6 +35,7 @@ public class ParserController : Controller
         var owner = HttpContext.Session.GetString(OwnerKey);
         ViewData["ActiveJobId"] = owner == null ? null : _jobs.GetOwned(owner)
             .LastOrDefault(job => job.State is "queued" or "running")?.Id;
+        SetCaptchaViewData();
         return View(new SearchIdentifiers());
     }
 
@@ -114,18 +115,20 @@ public class ParserController : Controller
     // A non-JavaScript form uses the same bounded queue and displays its final history page.
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> SearchByMedia(SearchIdentifiers identifiers, string mode = "User", List<int>? sourceIds = null)
+    public async Task<IActionResult> SearchByMedia(SearchIdentifiers identifiers, string mode = "User", List<int>? sourceIds = null, bool automaticCaptcha = false)
     {
         await _mediaService.UpdateMedia();
         var start = await StartCore(new SearchRequest
         {
             Identifiers = identifiers.Nicknames,
             Mode = mode,
-            SourceIds = sourceIds ?? _mediaService.GetSelectedMedia().Select(source => source.Id).ToList()
+            SourceIds = sourceIds ?? _mediaService.GetSelectedMedia().Select(source => source.Id).ToList(),
+            AutomaticCaptcha = automaticCaptcha
         });
         if (start.Job == null)
         {
             ModelState.AddModelError(string.Empty, start.Error ?? "Не вдалося запустити пошук.");
+            SetCaptchaViewData();
             return View(identifiers);
         }
         try
@@ -184,7 +187,7 @@ public class ParserController : Controller
             HttpContext.Session.SetString(OwnerKey, owner);
         }
         var started = _jobs.TryStart(owner, identifiers.SelectMany(identifier => sources
-            .Select(source => new SearchWorkItem(source, identifier))).ToList());
+            .Select(source => new SearchWorkItem(source, identifier))).ToList(), request.AutomaticCaptcha);
         if (started.Job != null) _mediaService.SetSelectedIds(sourceIds);
         return started;
     }
@@ -193,6 +196,13 @@ public class ParserController : Controller
     {
         var owner = HttpContext.Session.GetString(OwnerKey);
         return owner == null ? null : _jobs.Get(owner, id);
+    }
+
+    private void SetCaptchaViewData()
+    {
+        ViewData["CaptchaEnabled"] = _jobs.CaptchaEnabled;
+        ViewData["CaptchaAvailable"] = _jobs.CaptchaAvailable;
+        ViewData["CaptchaTaskLimit"] = _jobs.CaptchaTaskLimit;
     }
 
     private IActionResult StartResponse(SearchJobStartResult result) =>

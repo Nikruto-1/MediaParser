@@ -4,6 +4,7 @@ using System.Text.Json;
 using MediaParser.Classes;
 using MediaParser.Models;
 using MediaParser.Models.DBModels;
+using MediaParser.Services.Captcha;
 using OpenQA.Selenium;
 
 int passed = 0, failed = 0;
@@ -251,6 +252,52 @@ var manualApi = await SearchAlgorithm.CheckDetailedAsync(server.Url + "interacti
     new MediaSource { Name = "API with a browser profile", ApiUrl = server.Url + "interactive-api", SearchUrl = server.Url + "{0}" },
     driver: manualApiDriver.Driver, cancellationToken: manualApiDeadline.Token, interactive: true);
 Check("Interactive mode checks the supplied DOM even when the source has an API URL", () => Status(manualApi, AccountStatus.NotFound));
+
+bool tokenApplied = false;
+var automaticDriver = FakeDriver.Create(_ => tokenApplied ? Instagram() : "<h1>Please solve the captcha</h1>");
+var automation = new FakeCaptchaAutomation(() => { tokenApplied = true; return new(true, true, "Test token applied."); });
+var automaticResult = await SearchAlgorithm.CheckDetailedAsync(instagram, null, source, driver: automaticDriver.Driver,
+    captchaAutomation: automation, captchaBudget: new CaptchaSolveBudget(1));
+Check("After automatic CAPTCHA the profile still needs exact site evidence", () =>
+{
+    Status(automaticResult, AccountStatus.Found);
+    if (automation.Calls != 1) throw new InvalidOperationException("The same CAPTCHA was requested more than once.");
+});
+var neverSolvedDriver = FakeDriver.Create(_ => "<h1>Please solve the captcha</h1>");
+var tokenOnly = new FakeCaptchaAutomation(() => new(true, true, "Test token without site acceptance."));
+var tokenOnlyResult = await SearchAlgorithm.CheckDetailedAsync(instagram, null, source, driver: neverSolvedDriver.Driver,
+    captchaAutomation: tokenOnly, captchaBudget: new CaptchaSolveBudget(1));
+Check("A solver token alone never reports a profile as found or repeatedly charges", () =>
+{
+    Status(tokenOnlyResult, AccountStatus.Blocked);
+    if (tokenOnly.Calls != 1) throw new InvalidOperationException("A failed token was automatically paid for again.");
+});
+bool delayedSolved = false;
+var delayedCaptchaDriver = FakeDriver.Create(_ => delayedSolved ? Instagram() : "<h1>Please solve the captcha</h1>");
+FakeCaptchaAutomation? delayedAutomation = null;
+delayedAutomation = new FakeCaptchaAutomation(() =>
+{
+    if (delayedAutomation!.Calls == 1) return new(false, false, "The widget has not loaded yet.");
+    delayedSolved = true;
+    return new(true, true);
+});
+var delayedCaptchaResult = await SearchAlgorithm.CheckDetailedAsync(instagram, null, source, driver: delayedCaptchaDriver.Driver,
+    captchaAutomation: delayedAutomation, captchaBudget: new CaptchaSolveBudget(1));
+Check("An asynchronously loaded CAPTCHA is detected after the first DOM poll", () =>
+{
+    Status(delayedCaptchaResult, AccountStatus.Found);
+    if (delayedAutomation.Calls != 2) throw new InvalidOperationException("Widget loading was not retried without a paid task.");
+});
+var forbiddenAutomation = new FakeCaptchaAutomation(() => throw new InvalidOperationException("Unexpected paid solver invocation."));
+using var automaticManualCancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+var automaticManual = await SearchAlgorithm.CheckDetailedAsync(instagram, null, source, driver: neverSolvedDriver.Driver,
+    interactive: true, cancellationToken: automaticManualCancel.Token,
+    captchaAutomation: forbiddenAutomation, captchaBudget: new CaptchaSolveBudget(1));
+Check("Manual mode never invokes automatic CAPTCHA even if an automation service is present", () =>
+{
+    Status(automaticManual, AccountStatus.Cancelled);
+    if (forbiddenAutomation.Calls != 0) throw new InvalidOperationException("Manual Chrome used a paid solver.");
+});
 
 if (args.Contains("--browser", StringComparer.Ordinal))
 {

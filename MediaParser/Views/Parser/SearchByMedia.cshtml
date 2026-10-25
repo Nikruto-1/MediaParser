@@ -7,11 +7,14 @@
         && !sources.Any(source => source.IsSelected && source.Media.LinkType == "User") ? "FullName" : "User";
     var selected = sources.Where(source => source.Media.LinkType == initialMode).ToList();
     var identifiers = Model?.Nicknames?.Any() == true ? Model.Nicknames.Take(5).ToList() : new List<string> { string.Empty };
+    var captchaAvailable = ViewData["CaptchaAvailable"] is true;
+    var captchaEnabled = ViewData["CaptchaEnabled"] is true;
+    var captchaTaskLimit = ViewData["CaptchaTaskLimit"] is int configuredLimit ? Math.Clamp(configuredLimit, 1, 10) : 3;
 }
 
 <div id="searchWorkspace" class="search-workspace" data-active-job-id="@ViewData["ActiveJobId"]" data-start-url="@Url.Action("StartSearch", "Parser")"
      data-progress-url="@Url.Action("SearchProgress", "Parser")" data-cancel-url="@Url.Action("CancelSearch", "Parser")"
-     data-retry-url="@Url.Action("RetrySearch", "Parser")" data-export-url="@Url.Action("ExportJob", "Parser")" data-manual-url="@Url.Action("ManualCheck", "Parser")">
+     data-retry-url="@Url.Action("RetrySearch", "Parser")" data-export-url="@Url.Action("ExportJob", "Parser")" data-manual-url="@Url.Action("ManualCheck", "Parser")" data-captcha-task-limit="@captchaTaskLimit">
     <header class="page-heading">
         <div>
             <p class="eyebrow">ПЕРЕВІРКА ВІДКРИТИХ ПРОФІЛІВ</p>
@@ -60,6 +63,11 @@
                 </div>
                 <p class="field-hint" id="identifierHint">До 5 ідентифікаторів за один пошук. Дублікати перевіряються один раз.</p>
                 <button id="addIdentifier" type="button" class="btn btn-outline-secondary btn-sm"><span aria-hidden="true">＋</span> Додати ідентифікатор</button>
+                <div class="captcha-option @(!captchaAvailable ? "is-unavailable" : "")">
+                    <label for="automaticCaptcha" class="captcha-toggle"><input id="automaticCaptcha" type="checkbox" name="automaticCaptcha" value="true" checked="@captchaAvailable" disabled="@(!captchaAvailable)" aria-describedby="captchaHint captchaAvailability" /><span>Розв’язувати капчу автоматично</span></label>
+                    <p id="captchaHint" class="field-hint">2Captcha — платний сервіс. До @captchaTaskLimit завдань на один пошук. Провайдер отримує адресу сторінки та публічний ключ віджета.</p>
+                    <p id="captchaAvailability" class="captcha-availability">@(captchaAvailable ? "Провайдер налаштовано. Опцію можна вимкнути перед початком пошуку." : captchaEnabled ? "Недоступно без API-ключа 2Captcha. Налаштуйте його локально й перезапустіть застосунок." : "Вимкнено в налаштуваннях. Для роботи потрібні ввімкнений 2Captcha та локальний API-ключ, після налаштування — перезапуск.")</p>
+                </div>
             </section>
 
             <section class="workspace-panel sources-panel" aria-labelledby="sourcesHeading">
@@ -104,6 +112,7 @@
         <div class="progress-summary"><span id="progressCurrent">Готуємо чергу перевірок…</span><strong id="progressCount">0 / 0</strong></div>
         <progress id="searchProgressBar" max="100" value="0" aria-label="Прогрес перевірки джерел">0%</progress>
         <p id="progressAnnouncement" class="field-hint" role="status" aria-live="polite" aria-atomic="true"></p>
+        <p id="automaticCaptchaProgress" class="captcha-progress" role="status" aria-live="polite" hidden></p>
         <div id="interactiveNotice" class="manual-instructions" role="status" hidden><strong>Потрібна ваша дія у Chrome</strong><p>У вікні Chrome пройдіть капчу або авторизацію самостійно. Результат оновиться автоматично; до 2 хвилин. Не закривайте Chrome до завершення.</p></div>
         <div id="connectionNotice" class="connection-notice" role="status" hidden><span id="connectionMessage"></span><button type="button" id="reconnectSearch" class="text-button">Перевірити зараз</button></div>
     </section>

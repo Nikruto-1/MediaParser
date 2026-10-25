@@ -8,6 +8,7 @@ using MediaParser.IRepositories;
 using MediaParser.Repositories;
 using MediaParser.Services;
 using MediaParser.Services.DBServices;
+using MediaParser.Services.Captcha;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -15,6 +16,7 @@ using Microsoft.Extensions.Options;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
+    ("Automatic CAPTCHA is opt-in, has a shared per-search budget and never runs in manual mode", AutomaticCaptchaBudget),
     ("Jobs belong to their session and duplicate active work is rejected", OwnershipAndDuplicates),
     ("Cancellation returns partial results promptly and ignores late checker output", CancellationPreservesPartialResults),
     ("Retry includes only unresolved outcomes and preserves source snapshots", RetryUnresolvedOnly),
@@ -47,6 +49,52 @@ foreach (var test in tests)
 }
 Console.WriteLine($"Passed {tests.Length - failures}/{tests.Length} background job regression tests.");
 return failures == 0 ? 0 : 1;
+
+static async Task AutomaticCaptchaBudget()
+{
+    await using (var disabled = await Fixture.Create())
+    {
+        Assert(disabled.Service.TryStart("owner", Work(1), automaticCaptcha: true).StatusCode == 400,
+            "An unconfigured paid integration was accepted.");
+        Assert(disabled.Checker.CallCount == 0, "Disabled CAPTCHA started a checker.");
+    }
+    var options = new CaptchaOptions { Enabled = true, ApiKey = "fixture-private-captcha-key", MaxTasksPerSearch = 1 };
+    await using var fixture = await Fixture.Create(captchaOptions: options);
+    var ordinary = Started(fixture.Service.TryStart("owner", Work(1)));
+    var regular = await fixture.Checker.Next();
+    Assert(regular.CaptchaBudget == null && !ordinary.AutomaticCaptcha, "A normal search opted into paid CAPTCHA.");
+    regular.Finish(AccountStatus.Found);
+    await fixture.Finished("owner", ordinary.Id);
+
+    var automatic = Started(fixture.Service.TryStart("owner", Work(1, 2), automaticCaptcha: true));
+    Assert(automatic.AutomaticCaptcha, "The opted-in search lost its CAPTCHA setting.");
+    var first = await fixture.Checker.Next();
+    Assert(first.CaptchaBudget != null && first.CaptchaBudget.TryReserve(), "The automatic checker did not receive its budget.");
+    first.ReportProgress?.Invoke("Розв’язуємо капчу через 2Captcha…");
+    Assert(fixture.Service.Get("owner", automatic.Id)!.ProgressMessage == "Розв’язуємо капчу через 2Captcha…",
+        "CAPTCHA progress was not published.");
+    first.Finish(AccountStatus.Blocked);
+    var second = await fixture.Checker.Next();
+    Assert(ReferenceEquals(first.CaptchaBudget, second.CaptchaBudget) && !second.CaptchaBudget!.TryReserve(),
+        "Each source received a new spending budget instead of sharing the search limit.");
+    second.Finish(AccountStatus.Found);
+    var complete = await fixture.Finished("owner", automatic.Id);
+    Assert(complete.ProgressMessage == null && !JsonSerializer.Serialize(complete).Contains(options.ApiKey, StringComparison.Ordinal),
+        "A terminal snapshot kept transient progress or leaked the CAPTCHA key.");
+
+    var retry = Started(fixture.Service.Retry("owner", automatic.Id));
+    var retried = await fixture.Checker.Next();
+    Assert(retry.AutomaticCaptcha && retry.Total == 1 && retried.CaptchaBudget?.Used == 0 &&
+        !ReferenceEquals(first.CaptchaBudget, retried.CaptchaBudget), "Retry did not create a new bounded CAPTCHA budget.");
+    retried.Finish(AccountStatus.Unconfirmed);
+    await fixture.Finished("owner", retry.Id);
+    var manual = Started(fixture.Service.TryStartManual("owner", automatic.Id, 1, "test-identifier"));
+    var interactive = await fixture.Checker.Next();
+    Assert(manual.IsInteractive && !manual.AutomaticCaptcha && interactive.IsInteractive && interactive.CaptchaBudget == null,
+        "Manual Chrome unexpectedly invoked a paid CAPTCHA solver.");
+    interactive.Finish(AccountStatus.Unconfirmed);
+    await fixture.Finished("owner", manual.Id);
+}
 
 static async Task OwnershipAndDuplicates()
 {
@@ -579,19 +627,19 @@ sealed class Fixture : IAsyncDisposable
     public ManualTimeProvider Time { get; } = new();
     public SearchJobService Service { get; }
 
-    private Fixture(int workerCount, int queueCapacity, int maxRetainedJobs, TimeSpan retention)
+    private Fixture(int workerCount, int queueCapacity, int maxRetainedJobs, TimeSpan retention, CaptchaOptions? captchaOptions)
     {
         Service = new SearchJobService(Checker, Options.Create(new SearchJobOptions
         {
             WorkerCount = workerCount, QueueCapacity = queueCapacity,
             MaxRetainedJobs = maxRetainedJobs, Retention = retention
-        }), Time, NullLogger<SearchJobService>.Instance);
+        }), Time, NullLogger<SearchJobService>.Instance, Options.Create(captchaOptions ?? new CaptchaOptions()));
     }
 
     public static async Task<Fixture> Create(int workerCount = 1, int queueCapacity = 8,
-        int maxRetainedJobs = 100, TimeSpan? retention = null)
+        int maxRetainedJobs = 100, TimeSpan? retention = null, CaptchaOptions? captchaOptions = null)
     {
-        var fixture = new Fixture(workerCount, queueCapacity, maxRetainedJobs, retention ?? TimeSpan.FromHours(2));
+        var fixture = new Fixture(workerCount, queueCapacity, maxRetainedJobs, retention ?? TimeSpan.FromHours(2), captchaOptions);
         await fixture.Service.StartAsync(CancellationToken.None);
         return fixture;
     }
@@ -639,7 +687,11 @@ sealed class ControlledChecker : IAccountChecker
     public Task<AccountCheckResult> CheckInteractiveAsync(MediaSource source, string identifier, CancellationToken cancellationToken) =>
         Check(source, identifier, cancellationToken, true);
 
-    private async Task<AccountCheckResult> Check(MediaSource source, string identifier, CancellationToken cancellationToken, bool interactive)
+    public Task<AccountCheckResult> CheckWithCaptchaAsync(MediaSource source, string identifier, CaptchaSolveBudget budget,
+        Action<string> onProgress, CancellationToken cancellationToken) => Check(source, identifier, cancellationToken, false, budget, onProgress);
+
+    private async Task<AccountCheckResult> Check(MediaSource source, string identifier, CancellationToken cancellationToken, bool interactive,
+        CaptchaSolveBudget? captchaBudget = null, Action<string>? onProgress = null)
     {
         var active = Interlocked.Increment(ref _active);
         int observed;
@@ -650,7 +702,7 @@ sealed class ControlledChecker : IAccountChecker
         } while (Interlocked.CompareExchange(ref _maxActive, active, observed) != observed);
         Interlocked.Increment(ref _callCount);
         if (interactive) Interlocked.Increment(ref _interactiveCallCount);
-        var invocation = new Invocation(source, identifier, cancellationToken, interactive);
+        var invocation = new Invocation(source, identifier, cancellationToken, interactive, captchaBudget, onProgress);
         _all.Add(invocation);
         _calls.Writer.TryWrite(invocation);
         try { return await invocation.Response.Task; }
@@ -673,12 +725,15 @@ sealed class ControlledChecker : IAccountChecker
     }
 }
 
-sealed class Invocation(MediaSource source, string identifier, CancellationToken cancellationToken, bool interactive = false)
+sealed class Invocation(MediaSource source, string identifier, CancellationToken cancellationToken, bool interactive = false,
+    CaptchaSolveBudget? captchaBudget = null, Action<string>? onProgress = null)
 {
     public MediaSource Source { get; } = source;
     public string Identifier { get; } = identifier;
     public CancellationToken CancellationToken { get; } = cancellationToken;
     public bool IsInteractive { get; } = interactive;
+    public CaptchaSolveBudget? CaptchaBudget { get; } = captchaBudget;
+    public Action<string>? ReportProgress { get; } = onProgress;
     public TaskCompletionSource<AccountCheckResult> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public void Finish(AccountStatus status) => Response.TrySetResult(new AccountCheckResult(status, "Deterministic test result."));
 }

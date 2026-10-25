@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using MediaParser.Models;
 using MediaParser.Models.DBModels;
+using MediaParser.Services.Captcha;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
 
@@ -32,12 +33,20 @@ public static class SearchAlgorithm
         (await CheckDetailedAsync(url, apiKey, media, profile, driver)).ToLegacyMessage();
 
     public static async Task<AccountCheckResult> CheckDetailedAsync(string url, string? apiKey, MediaSource media,
-        string profile = "Default", IWebDriver? driver = null, CancellationToken cancellationToken = default, bool interactive = false)
+        string profile = "Default", IWebDriver? driver = null, CancellationToken cancellationToken = default, bool interactive = false,
+        ICaptchaAutomation? captchaAutomation = null, CaptchaSolveBudget? captchaBudget = null, Action<string>? onProgress = null)
     {
         if (cancellationToken.IsCancellationRequested) return Cancelled();
         if (!IsHttpUrl(url, out _))
             return new(AccountStatus.Error, "Некоректна адреса джерела: потрібен HTTP або HTTPS URL.");
         IWebDriver? ownedDriver = null;
+        bool canSolveCaptcha = !interactive && captchaAutomation != null && captchaBudget != null;
+        bool captchaHandled = false;
+        bool captchaTokenApplied = false;
+        string? captchaMessage = null;
+        AccountCheckResult WithCaptchaMessage(AccountCheckResult check) =>
+            string.IsNullOrWhiteSpace(captchaMessage) || check.Status is AccountStatus.Found or AccountStatus.NotFound
+                ? check : check with { Reason = check.Reason + " " + captchaMessage };
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -66,8 +75,8 @@ public static class SearchAlgorithm
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var partial = SiteRules.EvaluateHtml(driver.PageSource, url, driver.Url, media);
-                if (partial.Status is AccountStatus.Found or AccountStatus.NotFound || !interactive && partial.Status != AccountStatus.Unconfirmed) return partial;
-                if (!interactive) return new(AccountStatus.Unconfirmed, "Сторінка не завершила завантаження за відведений час.", "Таймаут навігації браузера.");
+                if (partial.Status is AccountStatus.Found or AccountStatus.NotFound || !interactive && !canSolveCaptcha && partial.Status != AccountStatus.Unconfirmed) return partial;
+                if (!interactive && !canSolveCaptcha) return new(AccountStatus.Unconfirmed, "Сторінка не завершила завантаження за відведений час.", "Таймаут навігації браузера.");
             }
 
             var elapsed = Stopwatch.StartNew();
@@ -76,6 +85,21 @@ public static class SearchAlgorithm
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 result = SiteRules.EvaluateHtml(driver.PageSource, url, driver.Url, media);
+                if (canSolveCaptcha && !captchaHandled && media.LinkType != "FullName" &&
+                    result.Status is AccountStatus.Blocked or AccountStatus.Unconfirmed)
+                {
+                    var attempt = await captchaAutomation!.TrySolveAsync(driver, captchaBudget!, cancellationToken, onProgress);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    captchaHandled = attempt.Attempted || captchaBudget!.Used >= captchaBudget.MaxTasks;
+                    captchaMessage = attempt.Message;
+                    if (attempt.TokenApplied)
+                    {
+                        captchaTokenApplied = true;
+                        elapsed.Restart();
+                        await Task.Delay(PollInterval, cancellationToken);
+                        continue;
+                    }
+                }
                 if (interactive)
                 {
                     // Only the person in front of Chrome handles a challenge or signs in.
@@ -86,12 +110,16 @@ public static class SearchAlgorithm
                 }
                 else
                 {
-                    if (result.Status != AccountStatus.Unconfirmed || media.LinkType == "FullName") return result;
+                    if (media.LinkType == "FullName" || result.Status is AccountStatus.Found or AccountStatus.NotFound or AccountStatus.Error)
+                        return WithCaptchaMessage(result);
+                    if (result.Status == AccountStatus.Blocked &&
+                        ((!canSolveCaptcha || captchaHandled) && !captchaTokenApplied || elapsed.Elapsed >= DomWait))
+                        return WithCaptchaMessage(result);
                     if (elapsed.Elapsed >= DomWait) break;
                 }
                 await Task.Delay(interactive ? TimeSpan.FromMilliseconds(700) : PollInterval, cancellationToken);
             } while (true);
-            return result;
+            return WithCaptchaMessage(result);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return Cancelled(); }
         catch (OperationCanceledException)

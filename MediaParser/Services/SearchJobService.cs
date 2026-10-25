@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using MediaParser.Models;
 using MediaParser.Models.DBModels;
+using MediaParser.Services.Captcha;
 using Microsoft.Extensions.Options;
 
 namespace MediaParser.Services;
@@ -23,6 +24,9 @@ public sealed class SearchJobService : BackgroundService
         public string? Error { get; set; }
         public DateTimeOffset? FinishedAt { get; set; }
         public bool WorkerActive { get; set; }
+        public bool AutomaticCaptcha { get; init; }
+        public CaptchaSolveBudget? CaptchaBudget { get; init; }
+        public string? ProgressMessage { get; set; }
     }
 
     private readonly object _gate = new();
@@ -32,15 +36,21 @@ public sealed class SearchJobService : BackgroundService
     private readonly SearchJobOptions _options;
     private readonly TimeProvider _clock;
     private readonly ILogger<SearchJobService> _logger;
+    private readonly CaptchaOptions _captchaOptions;
     private bool _accepting = true;
 
+    public bool CaptchaEnabled => _captchaOptions.Enabled;
+    public bool CaptchaAvailable => _captchaOptions.Enabled && !string.IsNullOrWhiteSpace(_captchaOptions.ApiKey);
+    public int CaptchaTaskLimit => _captchaOptions.MaxTasksPerSearch;
+
     public SearchJobService(IAccountChecker checker, IOptions<SearchJobOptions> options,
-        TimeProvider timeProvider, ILogger<SearchJobService> logger)
+        TimeProvider timeProvider, ILogger<SearchJobService> logger, IOptions<CaptchaOptions>? captchaOptions = null)
     {
         _checker = checker;
         _options = options.Value;
         _clock = timeProvider;
         _logger = logger;
+        _captchaOptions = captchaOptions?.Value ?? new CaptchaOptions();
         if (_options.WorkerCount is < 1 or > 4 || _options.QueueCapacity < 1 ||
             _options.MaxRetainedJobs < 1 || _options.Retention <= TimeSpan.Zero)
             throw new ArgumentException("Invalid search job limits.", nameof(options));
@@ -52,11 +62,11 @@ public sealed class SearchJobService : BackgroundService
         });
     }
 
-    public SearchJobStartResult TryStart(string owner, IReadOnlyList<SearchWorkItem> items) =>
-        TryStartCore(owner, items, Array.Empty<SearchResultItem>());
+    public SearchJobStartResult TryStart(string owner, IReadOnlyList<SearchWorkItem> items, bool automaticCaptcha = false) =>
+        TryStartCore(owner, items, Array.Empty<SearchResultItem>(), automaticCaptcha);
 
     private SearchJobStartResult TryStartCore(string owner, IReadOnlyList<SearchWorkItem> items,
-        IReadOnlyList<SearchResultItem> retainedResults)
+        IReadOnlyList<SearchResultItem> retainedResults, bool automaticCaptcha = false)
     {
         lock (_gate)
         {
@@ -66,6 +76,8 @@ public sealed class SearchJobService : BackgroundService
                 return new(null, "Вкажіть від 1 до 5 ідентифікаторів і виберіть джерела.", 400);
             if (!_accepting)
                 return new(null, "Сервер зупиняється. Спробуйте пізніше.", 503);
+            if (automaticCaptcha && !CaptchaAvailable)
+                return new(null, "Автоматична капча не налаштована. Додайте локальний API-ключ 2Captcha та увімкніть інтеграцію.", 400);
             if (_jobs.Values.Any(job => job.Owner == owner && !IsTerminal(job)))
                 return new(null, "Пошук уже виконується. Дочекайтеся завершення або зупиніть його.", 409);
 
@@ -85,7 +97,9 @@ public sealed class SearchJobService : BackgroundService
                 StartedAt = _clock.GetUtcNow(),
                 Items = items.GroupBy(item => (item.Source.Id, item.Identifier))
                     .Select(group => new SearchWorkItem(CloneSource(group.First().Source), group.Key.Identifier, group.First().Interactive)).ToList(),
-                Completed = retainedResults.Count
+                Completed = retainedResults.Count,
+                AutomaticCaptcha = automaticCaptcha,
+                CaptchaBudget = automaticCaptcha ? new CaptchaSolveBudget(_captchaOptions.MaxTasksPerSearch) : null
             };
             job.Results.AddRange(retainedResults);
             if (!_queue.Writer.TryWrite(job))
@@ -146,7 +160,7 @@ public sealed class SearchJobService : BackgroundService
                 result.Outcome is AccountStatus.Found or AccountStatus.NotFound))
                 .Select(item => new SearchWorkItem(item.Source, item.Identifier)).ToList();
             if (retry.Count == 0) return new(null, "Немає невдалих перевірок для повтору.", 400);
-            return TryStart(owner, retry);
+            return TryStart(owner, retry, job.AutomaticCaptcha);
         }
     }
 
@@ -219,13 +233,20 @@ public sealed class SearchJobService : BackgroundService
                             job.CurrentSite = item.Source.Name;
                             job.CurrentSiteId = item.Source.Id;
                             job.CurrentIdentifier = item.Identifier;
+                            job.ProgressMessage = null;
                         }
                         AccountCheckResult check;
                         try
                         {
-                            check = item.Interactive
-                                ? await _checker.CheckInteractiveAsync(item.Source, item.Identifier, cancellation.Token)
-                                : await _checker.CheckAsync(item.Source, item.Identifier, cancellation.Token);
+                            if (item.Interactive)
+                                check = await _checker.CheckInteractiveAsync(item.Source, item.Identifier, cancellation.Token);
+                            else if (job.CaptchaBudget != null)
+                                check = await _checker.CheckWithCaptchaAsync(item.Source, item.Identifier, job.CaptchaBudget, message =>
+                                {
+                                    lock (_gate) { if (!IsTerminal(job)) job.ProgressMessage = message; }
+                                }, cancellation.Token);
+                            else
+                                check = await _checker.CheckAsync(item.Source, item.Identifier, cancellation.Token);
                         }
                         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
                         catch (Exception exception)
@@ -305,6 +326,7 @@ public sealed class SearchJobService : BackgroundService
         job.CurrentSite = null;
         job.CurrentSiteId = null;
         job.CurrentIdentifier = null;
+        job.ProgressMessage = null;
     }
 
     private SearchResultItem MakeResult(SearchWorkItem item, AccountCheckResult check)
@@ -333,7 +355,7 @@ public sealed class SearchJobService : BackgroundService
             ?? MakeResult(item, job.State == "running" && job.CurrentSiteId == item.Source.Id && job.CurrentIdentifier == item.Identifier
                 ? new(AccountStatus.Checking, item.Interactive ? "Очікуємо ручної перевірки у відкритому Chrome." : "Перевіряємо це джерело.")
                 : new(AccountStatus.Pending, IsTerminal(job) ? "Перевірка не завершилася. Можна повторити." : "Джерело в черзі; перевірка ще не почалася."))).ToArray(),
-        job.Items.Any(item => item.Interactive));
+        job.Items.Any(item => item.Interactive), job.AutomaticCaptcha, job.ProgressMessage);
 
     private int PruneExpiredCore()
     {
