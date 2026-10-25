@@ -7,7 +7,9 @@ public enum AccountStatus
     Blocked,
     Unconfirmed,
     Error,
-    Cancelled
+    Cancelled,
+    Pending,
+    Checking
 }
 
 public sealed record AccountCheckResult(AccountStatus Status, string Reason, string? Evidence = null)
@@ -20,6 +22,8 @@ public sealed record AccountCheckResult(AccountStatus Status, string Reason, str
         AccountStatus.Blocked => "Доступ обмежено",
         AccountStatus.Unconfirmed => "Не підтверджено",
         AccountStatus.Cancelled => "Скасовано",
+        AccountStatus.Pending => "Очікує перевірки",
+        AccountStatus.Checking => "Перевіряємо",
         _ => "Помилка перевірки"
     };
 

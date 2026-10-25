@@ -51,6 +51,9 @@ public static class SiteRules
             return Unknown("Джерело перенаправило запит на іншу сторінку.", "Кінцева адреса не відповідає запитаному профілю.");
         if (media.LinkType == "FullName")
             return Unknown("Відкрито список результатів пошуку за ПІБ; окремий акаунт потрібно перевірити вручну.");
+        if (Site(original) == "epic" && original.AbsolutePath.StartsWith("/id/", StringComparison.OrdinalIgnoreCase))
+            return Unknown("Ця адреса Epic Games не є підтвердженим способом пошуку публічного профілю за display name.",
+                "Простір /id/ використовується для входу; перевірте акаунт через Epic Games або офіційний авторизований API.");
 
         string? site = Site(original);
         string? identity = ProfileIdentity(original, site);
@@ -107,9 +110,10 @@ public static class SiteRules
 
     private static AccountCheckResult? PositiveEvidence(HtmlDocument document, Uri original, string site, string identity)
     {
-        bool exactUrl = Meta(document, "og:url").Any(url => MatchesProfile(url, site, identity)) ||
-            Nodes(document, "//link[@href]").Any(node => Tokens(node.GetAttributeValue("rel", "")).Contains("canonical") && MatchesProfile(node.GetAttributeValue("href", ""), site, identity));
-        if (HasProfileSchema(document, site, identity))
+        string? profileNamespace = ProfileNamespace(original, site);
+        bool exactUrl = Meta(document, "og:url").Any(url => MatchesProfile(url, site, identity, profileNamespace)) ||
+            Nodes(document, "//link[@href]").Any(node => Tokens(node.GetAttributeValue("rel", "")).Contains("canonical") && MatchesProfile(node.GetAttributeValue("href", ""), site, identity, profileNamespace));
+        if (HasProfileSchema(document, site, identity, profileNamespace))
             return Found("Структуровані дані профілю підтверджують запитаний ідентифікатор.", "ProfilePage/Person/Organization: точні alternateName та URL профілю.");
         if (!exactUrl && site != "youtube") return null;
 
@@ -166,7 +170,7 @@ public static class SiteRules
         return null;
     }
 
-    private static bool HasProfileSchema(HtmlDocument document, string site, string identity)
+    private static bool HasProfileSchema(HtmlDocument document, string site, string identity, string? profileNamespace)
     {
         foreach (var script in Nodes(document, "//script[@type='application/ld+json']"))
         {
@@ -183,7 +187,7 @@ public static class SiteRules
                     }
                     if (!(HasType(entity, "Person") || HasType(entity, "Organization"))) continue;
                     if (EqualIdentity(String(entity, "alternateName"), identity) &&
-                        (MatchesProfile(String(entity, "url"), site, identity) || MatchesProfile(String(item, "url"), site, identity)))
+                        (MatchesProfile(String(entity, "url"), site, identity, profileNamespace) || MatchesProfile(String(item, "url"), site, identity, profileNamespace)))
                         return true;
                 }
             }
@@ -216,6 +220,7 @@ public static class SiteRules
         if (original == final) return false;
         string? site = Site(original);
         if (site == null ? !Host(original).Equals(Host(final), StringComparison.OrdinalIgnoreCase) : Site(final) != site) return true;
+        if (ProfileNamespace(original, site) != ProfileNamespace(final, site)) return true;
         if (media.LinkType == "FullName") return original.AbsolutePath.TrimEnd('/') != final.AbsolutePath.TrimEnd('/') || original.Query != final.Query;
         string? identity = ProfileIdentity(original, site);
         return identity == null ? !original.AbsolutePath.TrimEnd('/').Equals(final.AbsolutePath.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) :
@@ -248,7 +253,6 @@ public static class SiteRules
             "rumble" when parts.Length == 2 && parts[0] is "user" or "c" => parts[1],
             "medium" when parts.Length == 1 && parts[0].StartsWith('@') => parts[0][1..],
             "spotify" when parts.Length == 2 && parts[0] == "user" => parts[1],
-            "epic" when parts.Length == 2 && parts[0] == "id" => parts[1],
             "github-api" when parts.Length == 2 && parts[0] == "users" => parts[1],
             "snapchat" when parts.Length == 2 && parts[0] == "add" => parts[1].TrimStart('@'),
             "snapchat" or "youtube" or "tiktok" when parts.Length == 1 && parts[0].StartsWith('@') => parts[0][1..],
@@ -257,8 +261,18 @@ public static class SiteRules
             _ => null
         };
     }
-    private static bool MatchesProfile(string? value, string site, string identity) => Uri.TryCreate(HtmlEntity.DeEntitize(value ?? ""), UriKind.Absolute, out var url) &&
-        url.Scheme is "http" or "https" && Site(url) == site && EqualIdentity(ProfileIdentity(url, site), identity);
+    // Rumble user accounts and channels can have the same spelling but represent different entities.
+    // Its root vanity URLs are channel aliases, not aliases for /user/{username}.
+    private static string? ProfileNamespace(Uri uri, string? site)
+    {
+        if (site != "rumble") return null;
+        var parts = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 2 && parts[0] == "user" ? "user" :
+            parts.Length == 1 || (parts.Length == 2 && parts[0] == "c") ? "channel" : null;
+    }
+    private static bool MatchesProfile(string? value, string site, string identity, string? profileNamespace = null) => Uri.TryCreate(HtmlEntity.DeEntitize(value ?? ""), UriKind.Absolute, out var url) &&
+        url.Scheme is "http" or "https" && Site(url) == site && EqualIdentity(ProfileIdentity(url, site), identity) &&
+        (profileNamespace == null || ProfileNamespace(url, site) == profileNamespace);
     private static bool MatchesYouTubeChannel(string value, string id) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && Site(uri) == "youtube" && uri.AbsolutePath.TrimEnd('/') == "/channel/" + id;
     private static bool IsInstagramAppLink(string value, string identity)
     {

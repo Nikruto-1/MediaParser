@@ -80,6 +80,19 @@ public class ParserController : Controller
         return StartResponse(_jobs.Retry(owner, id));
     }
 
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public IActionResult ManualCheck(Guid id, [FromBody] ManualCheckRequest? request)
+    {
+        var owner = HttpContext.Session.GetString(OwnerKey);
+        var original = owner == null ? null : _jobs.Get(owner, id);
+        if (original == null) return MissingJob();
+        if (!ModelState.IsValid || request == null || string.IsNullOrWhiteSpace(request.Identifier) || request.Identifier.Length > 100)
+            return BadRequest(new { error = "Оберіть результат для ручної перевірки." });
+        _resultsRepository.SaveJob(original);
+        return StartResponse(_jobs.TryStartManual(owner!, id, request.SiteId, request.Identifier));
+    }
+
     [HttpGet]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     public IActionResult ExportJob(Guid id)

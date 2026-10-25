@@ -24,7 +24,12 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Progress is monotonic and public snapshots do not contain API credentials", ProgressAndSafeOutput),
     ("Admission rejects empty or oversized requests and deduplicates identical work", AdmissionValidation),
     ("Checker exceptions become retryable sanitized results", CheckerExceptionIsSanitized),
-    ("Controller validates mode and source membership and protects every job endpoint", ControllerValidationAndOwnership)
+    ("Controller validates mode and source membership and protects every job endpoint", ControllerValidationAndOwnership),
+    ("Every planned source appears immediately without counting pending or checking rows", PlannedRowsAndProgress),
+    ("Manual checks validate ownership and target status and preserve every other result", ManualValidationAndPreservation),
+    ("Cancelling a manual check preserves retained rows and holds the occupied worker slot", ManualCancellationAndSlots),
+    ("Manual checking targets one source and identifier pair without changing its other identifiers", ManualTargetPairIsolation),
+    ("Ordinary retry of an unresolved manual result uses only the non-interactive checker", OrdinaryRetryIsNotInteractive)
 };
 var failures = 0;
 foreach (var test in tests)
@@ -304,13 +309,226 @@ static async Task ControllerValidationAndOwnership()
     await fixture.Finished(session.GetString("SearchOwner")!, job.Id);
     Assert(controller.SearchProgress(job.Id) is JsonResult { Value: SearchJobSnapshot }, "The owner could not read completed progress.");
     Assert(controller.ExportJob(job.Id) is FileContentResult { FileContents.Length: > 0 }, "The owner could not export completed results.");
+    Assert(controller.ManualCheck(job.Id, null) is ObjectResult { StatusCode: 400 }, "Manual checking accepted a null request body.");
+    Assert(controller.ManualCheck(job.Id, new ManualCheckRequest { SiteId = 404, Identifier = "Alice Bob" }) is ObjectResult { StatusCode: 400 },
+        "Manual checking accepted a source outside the owned job.");
+    Assert(controller.ManualCheck(Guid.NewGuid(), new ManualCheckRequest { SiteId = 2, Identifier = "Alice Bob" }) is NotFoundObjectResult,
+        "Manual checking did not reject an unknown job.");
 
     var (stranger, _) = CreateController(fixture.Service, user, fullName);
     Assert(stranger.SearchProgress(job.Id) is NotFoundObjectResult, "Progress exposed another session's job.");
     Assert(stranger.CancelSearch(job.Id) is NotFoundObjectResult, "Cancel exposed another session's job.");
     Assert(stranger.RetrySearch(job.Id) is NotFoundObjectResult, "Retry exposed another session's job.");
     Assert(stranger.ExportJob(job.Id) is NotFoundObjectResult, "Export exposed another session's results.");
+    Assert(stranger.ManualCheck(job.Id, new ManualCheckRequest { SiteId = 2, Identifier = "Alice Bob" }) is NotFoundObjectResult,
+        "Manual checking exposed another session's job.");
 }
+
+static async Task PlannedRowsAndProgress()
+{
+    await using var fixture = await Fixture.Create();
+    var items = Work(1, 2, 3);
+    const string secret = "TEST-ONLY-planned-row-secret-742619";
+    foreach (var item in items)
+    {
+        item.Source.ApiUrl = $"https://private.example/api/{item.Source.Id}/{{0}}";
+        item.Source.ApiKey = secret;
+    }
+    var initial = Started(fixture.Service.TryStart("owner", items));
+    var planned = Planned(initial);
+    Assert(!initial.IsInteractive && initial.Completed == 0 && initial.Results.Count == 0,
+        "Initial progress counted unfinished work or marked an ordinary job interactive.");
+    Assert(planned.Count == 3 && planned.All(row => row.Outcome == AccountStatus.Pending && row.CheckedAt == null),
+        "All selected sources were not present as timestamp-free pending rows in the admission response.");
+    Assert(planned.Select(row => row.SiteId).Order().SequenceEqual(new[] { 1, 2, 3 }),
+        "The planned rows did not match the selected sources.");
+    var first = await fixture.Checker.Next();
+    var running = fixture.Service.Get("owner", initial.Id)!;
+    planned = Planned(running);
+    Assert(planned.Count(row => row.Outcome == AccountStatus.Checking) == 1 &&
+        planned.Single(row => row.Outcome == AccountStatus.Checking).SiteId == 1 &&
+        planned.Count(row => row.Outcome == AccountStatus.Pending) == 2,
+        "The active item was not distinguished from queued sources.");
+    Assert(planned.All(row => row.CheckedAt == null) && running.Completed == 0 && running.Results.Count == 0,
+        "Pending or checking placeholders were counted as completed checks or given check timestamps.");
+    var publicJson = JsonSerializer.Serialize(running);
+    Assert(!publicJson.Contains(secret, StringComparison.Ordinal) && !publicJson.Contains("ApiKey", StringComparison.OrdinalIgnoreCase)
+        && !publicJson.Contains("private.example", StringComparison.Ordinal), "Planned rows exposed private source credentials or API addresses.");
+
+    first.Finish(AccountStatus.Found);
+    var second = await fixture.Checker.Next();
+    var partial = fixture.Service.Get("owner", initial.Id)!;
+    planned = Planned(partial);
+    Assert(partial.Completed == 1 && partial.Results.Count == 1 && planned.Count == 3,
+        "Partial progress included placeholders or omitted planned sources.");
+    Assert(planned.Single(row => row.SiteId == 1).Outcome == AccountStatus.Found &&
+        planned.Single(row => row.SiteId == 1).CheckedAt != null &&
+        planned.Single(row => row.SiteId == 2).Outcome == AccountStatus.Checking &&
+        planned.Single(row => row.SiteId == 3).Outcome == AccountStatus.Pending,
+        "The plan did not merge retained, active, and pending rows correctly.");
+    second.Finish(AccountStatus.NotFound);
+    (await fixture.Checker.Next()).Finish(AccountStatus.Unconfirmed);
+    var final = await fixture.Finished("owner", initial.Id);
+    Assert(final.Completed == 3 && Planned(final).All(row => row.Outcome is not (AccountStatus.Pending or AccountStatus.Checking)),
+        "Completed jobs still contain pending or checking placeholders.");
+}
+
+static async Task ManualValidationAndPreservation()
+{
+    await using var fixture = await Fixture.Create();
+    var items = Work(1, 2, 3, 4);
+    items[2].Source.ApiUrl = "https://private.example/api/{0}";
+    items[2].Source.ApiKey = "TEST-ONLY-manual-source-secret-752491";
+    var original = Started(fixture.Service.TryStart("owner", items));
+    var first = await fixture.Checker.Next();
+    Assert(fixture.Service.TryStartManual("stranger", original.Id, 3, "test-identifier").StatusCode == 404,
+        "A foreign session could request a manual check or discover the original job.");
+    Assert(fixture.Service.TryStartManual("owner", Guid.NewGuid(), 3, "test-identifier").StatusCode == 404,
+        "An unknown job did not return 404 for manual checking.");
+    Assert(fixture.Service.TryStartManual("owner", original.Id, 3, "test-identifier").StatusCode == 409,
+        "Manual checking was allowed before the original job finished.");
+    first.Finish(AccountStatus.Found);
+    (await fixture.Checker.Next()).Finish(AccountStatus.NotFound);
+    (await fixture.Checker.Next()).Finish(AccountStatus.Blocked);
+    (await fixture.Checker.Next()).Finish(AccountStatus.Error);
+    var before = await fixture.Finished("owner", original.Id);
+    Assert(fixture.Service.TryStartManual("owner", original.Id, 1, "test-identifier").StatusCode == 400,
+        "A confirmed found row was admitted for manual checking.");
+    Assert(fixture.Service.TryStartManual("owner", original.Id, 2, "test-identifier").StatusCode == 400,
+        "A confirmed absent row was admitted for manual checking.");
+    Assert(fixture.Service.TryStartManual("owner", original.Id, 404, "test-identifier").StatusCode == 400,
+        "An unknown source was admitted for manual checking.");
+    Assert(fixture.Service.TryStartManual("owner", original.Id, 3, "different-identifier").StatusCode == 400,
+        "A mismatched identifier was admitted for manual checking.");
+
+    var another = Started(fixture.Service.TryStart("owner", Work(5)));
+    var occupied = await fixture.Checker.Next();
+    Assert(fixture.Service.TryStartManual("owner", original.Id, 3, "test-identifier").StatusCode == 409,
+        "Manual checking bypassed another active job belonging to the same session.");
+    occupied.Finish(AccountStatus.Found);
+    await fixture.Finished("owner", another.Id);
+
+    fixture.Time.Advance(TimeSpan.FromMinutes(1));
+    var manual = Started(fixture.Service.TryStartManual("owner", original.Id, 3, "test-identifier"));
+    Assert(manual.Id != original.Id && manual.IsInteractive && manual.Total == 4 && manual.Completed == 3 && manual.Results.Count == 3,
+        "Manual checking did not create a new job retaining all non-target results and their progress.");
+    foreach (var retained in before.Results.Where(row => row.SiteId != 3))
+        Assert(manual.Results.Single(row => row.SiteId == retained.SiteId) == retained,
+            "Manual admission changed a retained result or its original timestamp.");
+    Assert(Planned(manual).Count == 4 && Planned(manual).Single(row => row.SiteId == 3).Outcome == AccountStatus.Pending,
+        "The manual target was not exposed as pending alongside retained rows.");
+    var interactive = await fixture.Checker.Next();
+    Assert(interactive.IsInteractive && interactive.Source.Id == 3 && interactive.Identifier == "test-identifier",
+        "Manual work did not use the interactive checker for exactly the requested target.");
+    Assert(interactive.Source.ApiUrl == null && interactive.Source.ApiKey == null &&
+        interactive.Source.SearchUrl == "https://example.test/3/{0}",
+        "Manual work retained API credentials or lost its public web URL.");
+    var checking = fixture.Service.Get("owner", manual.Id)!;
+    Assert(checking.Completed == 3 && checking.Results.Count == 3 &&
+        Planned(checking).Single(row => row.SiteId == 3).Outcome == AccountStatus.Checking &&
+        Planned(checking).Single(row => row.SiteId == 3).CheckedAt == null,
+        "The interactive target was counted as completed before its check finished.");
+    interactive.Finish(AccountStatus.Found);
+    var final = await fixture.Finished("owner", manual.Id);
+    Assert(final.Completed == 4 && final.Results.Count == 4 && final.IsInteractive,
+        "The completed manual job lost retained rows or incorrect progress.");
+    foreach (var retained in before.Results.Where(row => row.SiteId != 3))
+        Assert(final.Results.Single(row => row.SiteId == retained.SiteId) == retained,
+            "Manual completion rewrote an unrelated result or its timestamp.");
+    var changed = final.Results.Single(row => row.SiteId == 3);
+    Assert(changed.Outcome == AccountStatus.Found && changed.CheckedAt > before.Results.Single(row => row.SiteId == 3).CheckedAt,
+        "The manual target did not receive its new outcome and check timestamp.");
+    Assert(fixture.Service.Get("owner", original.Id)!.Results.Single(row => row.SiteId == 3).Outcome == AccountStatus.Blocked,
+        "Manual checking overwrote the original job's history.");
+    Assert(fixture.Checker.CallCount == 6 && fixture.Checker.InteractiveCallCount == 1,
+        "Manual checking repeated retained sources or used the normal checker.");
+    var json = JsonSerializer.Serialize(final);
+    Assert(!json.Contains("TEST-ONLY-manual-source-secret-752491", StringComparison.Ordinal) &&
+        !json.Contains("private.example", StringComparison.Ordinal), "Manual progress exposed credentials or private API addresses.");
+}
+
+static async Task ManualCancellationAndSlots()
+{
+    await using var fixture = await Fixture.Create(workerCount: 1, queueCapacity: 2);
+    var original = Started(fixture.Service.TryStart("owner", Work(1, 2, 3)));
+    (await fixture.Checker.Next()).Finish(AccountStatus.Found);
+    (await fixture.Checker.Next()).Finish(AccountStatus.Blocked);
+    (await fixture.Checker.Next()).Finish(AccountStatus.Error);
+    var retained = await fixture.Finished("owner", original.Id);
+    var manual = Started(fixture.Service.TryStartManual("owner", original.Id, 2, "test-identifier"));
+    var interactive = await fixture.Checker.Next();
+    Assert(interactive.IsInteractive, "The manual checker did not start.");
+    var successor = Started(fixture.Service.TryStart("next-owner", Work(4)));
+    var cancelled = fixture.Service.Cancel("owner", manual.Id)!;
+    Assert(cancelled.State == "cancelled" && cancelled.Completed == 2 && cancelled.Results.Count == 3,
+        "Manual cancellation lost retained progress or counted the target as checked.");
+    foreach (var row in retained.Results.Where(row => row.SiteId != 2))
+        Assert(cancelled.Results.Single(result => result.SiteId == row.SiteId) == row,
+            "Manual cancellation changed a retained row or its timestamp.");
+    Assert(cancelled.Results.Single(row => row.SiteId == 2).Outcome == AccountStatus.Cancelled &&
+        interactive.CancellationToken.IsCancellationRequested, "The cancelled target or token state was incorrect.");
+    Assert(fixture.Checker.CallCount == 4 && fixture.Checker.Active == 1 && fixture.Checker.MaxActive == 1,
+        "Manual cancellation released its worker slot before the checker stopped.");
+    interactive.Finish(AccountStatus.Found);
+    var next = await fixture.Checker.Next();
+    Assert(!next.IsInteractive && next.Source.Id == 4 && fixture.Checker.MaxActive == 1,
+        "Queued work overlapped the cancelled interactive check.");
+    next.Finish(AccountStatus.Found);
+    await fixture.Finished("next-owner", successor.Id);
+    var final = fixture.Service.Get("owner", manual.Id)!;
+    Assert(final.Completed == 2 && final.Results.Single(row => row.SiteId == 2).Outcome == AccountStatus.Cancelled,
+        "A late interactive response overwrote the cancelled manual result.");
+}
+
+static async Task ManualTargetPairIsolation()
+{
+    await using var fixture = await Fixture.Create();
+    var source = Work(1)[0].Source;
+    var items = new[] { new SearchWorkItem(source, "first"), new SearchWorkItem(source, "second") };
+    var original = Started(fixture.Service.TryStart("owner", items));
+    Assert(Planned(original).Count == 2 && Planned(original).All(row => row.Outcome == AccountStatus.Pending),
+        "Multiple identifiers at the same source were collapsed in planned rows.");
+    (await fixture.Checker.Next()).Finish(AccountStatus.Blocked);
+    (await fixture.Checker.Next()).Finish(AccountStatus.NotFound);
+    var finished = await fixture.Finished("owner", original.Id);
+    var retained = finished.Results.Single(row => row.Identifier == "second");
+    var manual = Started(fixture.Service.TryStartManual("owner", original.Id, 1, "first"));
+    Assert(manual.Total == 2 && manual.Completed == 1 && manual.Results.Single() == retained,
+        "Manual admission removed a different identifier at the same source.");
+    var invocation = await fixture.Checker.Next();
+    Assert(invocation.IsInteractive && invocation.Source.Id == 1 && invocation.Identifier == "first",
+        "Manual work selected the wrong source and identifier pair.");
+    invocation.Finish(AccountStatus.Found);
+    var final = await fixture.Finished("owner", manual.Id);
+    Assert(final.Results.Count == 2 && final.Results.Single(row => row.Identifier == "second") == retained &&
+        final.Results.Single(row => row.Identifier == "first").Outcome == AccountStatus.Found,
+        "A single-row manual result overwrote another identifier at the same source.");
+    Assert(fixture.Checker.InteractiveCallCount == 1 && fixture.Checker.CallCount == 3,
+        "Manual work repeated the other identifier at the same source.");
+}
+
+static async Task OrdinaryRetryIsNotInteractive()
+{
+    await using var fixture = await Fixture.Create();
+    var original = Started(fixture.Service.TryStart("owner", Work(1)));
+    (await fixture.Checker.Next()).Finish(AccountStatus.Blocked);
+    await fixture.Finished("owner", original.Id);
+    var manual = Started(fixture.Service.TryStartManual("owner", original.Id, 1, "test-identifier"));
+    var interactive = await fixture.Checker.Next();
+    Assert(interactive.IsInteractive, "The explicitly requested manual check was not interactive.");
+    interactive.Finish(AccountStatus.Unconfirmed);
+    await fixture.Finished("owner", manual.Id);
+    var retry = Started(fixture.Service.Retry("owner", manual.Id));
+    Assert(!retry.IsInteractive && retry.Total == 1, "Ordinary retry retained the interactive flag.");
+    var normal = await fixture.Checker.Next();
+    Assert(!normal.IsInteractive && normal.Source.Id == 1 && fixture.Checker.InteractiveCallCount == 1,
+        "Ordinary retry opened a second interactive check without an explicit manual request.");
+    normal.Finish(AccountStatus.Found);
+    await fixture.Finished("owner", retry.Id);
+}
+
+static IReadOnlyList<SearchResultItem> Planned(SearchJobSnapshot snapshot) => snapshot.PlannedResults
+    ?? throw new InvalidOperationException("The job snapshot did not include planned source rows.");
 
 static (ParserController Controller, MemorySession Session) CreateController(SearchJobService jobs, params MediaSource[] sources)
 {
@@ -409,11 +627,19 @@ sealed class ControlledChecker : IAccountChecker
     private int _active;
     private int _maxActive;
     private int _callCount;
+    private int _interactiveCallCount;
     public int Active => Volatile.Read(ref _active);
     public int MaxActive => Volatile.Read(ref _maxActive);
     public int CallCount => Volatile.Read(ref _callCount);
+    public int InteractiveCallCount => Volatile.Read(ref _interactiveCallCount);
 
-    public async Task<AccountCheckResult> CheckAsync(MediaSource source, string identifier, CancellationToken cancellationToken)
+    public Task<AccountCheckResult> CheckAsync(MediaSource source, string identifier, CancellationToken cancellationToken) =>
+        Check(source, identifier, cancellationToken, false);
+
+    public Task<AccountCheckResult> CheckInteractiveAsync(MediaSource source, string identifier, CancellationToken cancellationToken) =>
+        Check(source, identifier, cancellationToken, true);
+
+    private async Task<AccountCheckResult> Check(MediaSource source, string identifier, CancellationToken cancellationToken, bool interactive)
     {
         var active = Interlocked.Increment(ref _active);
         int observed;
@@ -423,7 +649,8 @@ sealed class ControlledChecker : IAccountChecker
             if (observed >= active) break;
         } while (Interlocked.CompareExchange(ref _maxActive, active, observed) != observed);
         Interlocked.Increment(ref _callCount);
-        var invocation = new Invocation(source, identifier, cancellationToken);
+        if (interactive) Interlocked.Increment(ref _interactiveCallCount);
+        var invocation = new Invocation(source, identifier, cancellationToken, interactive);
         _all.Add(invocation);
         _calls.Writer.TryWrite(invocation);
         try { return await invocation.Response.Task; }
@@ -446,11 +673,12 @@ sealed class ControlledChecker : IAccountChecker
     }
 }
 
-sealed class Invocation(MediaSource source, string identifier, CancellationToken cancellationToken)
+sealed class Invocation(MediaSource source, string identifier, CancellationToken cancellationToken, bool interactive = false)
 {
     public MediaSource Source { get; } = source;
     public string Identifier { get; } = identifier;
     public CancellationToken CancellationToken { get; } = cancellationToken;
+    public bool IsInteractive { get; } = interactive;
     public TaskCompletionSource<AccountCheckResult> Response { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public void Finish(AccountStatus status) => Response.TrySetResult(new AccountCheckResult(status, "Deterministic test result."));
 }

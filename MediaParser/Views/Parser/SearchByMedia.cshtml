@@ -5,13 +5,13 @@
     var sources = MediaService.GetMediaSources().OrderBy(source => source.Media.Name).ToList();
     var initialMode = sources.Any(source => source.IsSelected && source.Media.LinkType == "FullName")
         && !sources.Any(source => source.IsSelected && source.Media.LinkType == "User") ? "FullName" : "User";
-    var selected = sources.Where(source => source.IsSelected && source.Media.LinkType == initialMode).ToList();
+    var selected = sources.Where(source => source.Media.LinkType == initialMode).ToList();
     var identifiers = Model?.Nicknames?.Any() == true ? Model.Nicknames.Take(5).ToList() : new List<string> { string.Empty };
 }
 
 <div id="searchWorkspace" class="search-workspace" data-active-job-id="@ViewData["ActiveJobId"]" data-start-url="@Url.Action("StartSearch", "Parser")"
      data-progress-url="@Url.Action("SearchProgress", "Parser")" data-cancel-url="@Url.Action("CancelSearch", "Parser")"
-     data-retry-url="@Url.Action("RetrySearch", "Parser")" data-export-url="@Url.Action("ExportJob", "Parser")">
+     data-retry-url="@Url.Action("RetrySearch", "Parser")" data-export-url="@Url.Action("ExportJob", "Parser")" data-manual-url="@Url.Action("ManualCheck", "Parser")">
     <header class="page-heading">
         <div>
             <p class="eyebrow">ПЕРЕВІРКА ВІДКРИТИХ ПРОФІЛІВ</p>
@@ -69,18 +69,20 @@
                         <label for="sourceSearch" class="visually-hidden">Знайти джерело за назвою</label>
                         <input id="sourceSearch" type="search" class="form-control" placeholder="Знайти джерело…" autocomplete="off" />
                     </div>
-                    <div class="source-bulk-actions"><button type="button" id="selectVisibleSources" class="text-button">Обрати видимі</button><button type="button" id="clearSources" class="text-button">Скинути</button></div>
+                    <div class="source-bulk-actions"><button type="button" id="selectAllSources" class="text-button">Обрати всі</button><button type="button" id="clearSources" class="text-button">Скинути</button></div>
                 </div>
+                <p class="source-selection-note">Перевіряються лише обрані джерела. За замовчуванням обрано всі сумісні з режимом.</p>
                 <p id="sourceModeHint" class="field-hint">Доступні джерела для вибраного типу ідентифікатора.</p>
                 <div id="sourceList" class="source-grid">
                     @foreach (var source in sources)
                     {
                         var supported = source.Media.LinkType is "User" or "FullName";
                         var matches = source.Media.LinkType == initialMode;
-                        <label class="source-option @(!matches ? "is-incompatible" : "")" data-source-id="@source.Media.Id" data-source-name="@source.Media.Name" data-mode="@source.Media.LinkType">
-                            <input type="checkbox" class="source-checkbox" name="sourceIds" value="@source.Media.Id" checked="@(source.IsSelected && matches)" disabled="@(!matches || !supported)" data-initial-selected="@(source.IsSelected ? "true" : "false")" aria-describedby="sourceModeHint" />
+                        var sourceHint = MediaParser.Classes.SourceCapabilities.GetHint(source.Media.SearchUrl);
+                        <label class="source-option @(!matches ? "is-incompatible" : "")" data-source-id="@source.Media.Id" data-source-name="@source.Media.Name" data-mode="@source.Media.LinkType" data-manual-supported="@(source.Media.LinkType == "User" && MediaParser.Classes.SourceCapabilities.SupportsManualCheck(source.Media.SearchUrl) ? "true" : "false")">
+                            <input type="checkbox" class="source-checkbox" name="sourceIds" value="@source.Media.Id" checked="@(matches && supported)" disabled="@(!matches || !supported)" data-initial-selected="@(supported ? "true" : "false")" aria-describedby="@("sourceModeHint" + (sourceHint != null ? " sourceHint_" + source.Media.Id : string.Empty))" />
                             <span class="source-avatar" aria-hidden="true">@source.Media.Name.FirstOrDefault()</span>
-                            <span class="source-option-text"><span class="source-name">@source.Media.Name</span><span class="source-type">@(source.Media.LinkType == "FullName" ? "Пошук за ПІБ" : source.Media.LinkType == "User" ? "Профіль за нікнеймом" : "Тип не налаштовано")</span></span>
+                            <span class="source-option-text"><span class="source-name">@source.Media.Name</span><span class="source-type">@(source.Media.LinkType == "FullName" ? "Пошук за ПІБ" : source.Media.LinkType == "User" ? "Профіль за нікнеймом" : "Тип не налаштовано")</span>@if (sourceHint != null) { <span class="source-hint" id="sourceHint_@source.Media.Id">@sourceHint</span> }</span>
                         </label>
                     }
                 </div>
@@ -102,6 +104,7 @@
         <div class="progress-summary"><span id="progressCurrent">Готуємо чергу перевірок…</span><strong id="progressCount">0 / 0</strong></div>
         <progress id="searchProgressBar" max="100" value="0" aria-label="Прогрес перевірки джерел">0%</progress>
         <p id="progressAnnouncement" class="field-hint" role="status" aria-live="polite" aria-atomic="true"></p>
+        <div id="interactiveNotice" class="manual-instructions" role="status" hidden><strong>Потрібна ваша дія у Chrome</strong><p>У вікні Chrome пройдіть капчу або авторизацію самостійно. Результат оновиться автоматично; до 2 хвилин. Не закривайте Chrome до завершення.</p></div>
         <div id="connectionNotice" class="connection-notice" role="status" hidden><span id="connectionMessage"></span><button type="button" id="reconnectSearch" class="text-button">Перевірити зараз</button></div>
     </section>
 
@@ -111,12 +114,13 @@
         <div class="result-counters" id="resultCounters" aria-label="Фільтр за результатом">
             <button type="button" class="result-counter is-active" data-status-filter="all" aria-pressed="true"><span>Усі перевірки</span><strong data-count="all">0</strong></button>
             <button type="button" class="result-counter counter-found" data-status-filter="found" aria-pressed="false"><span>Знайдено</span><strong data-count="found">0</strong></button>
+            <button type="button" class="result-counter counter-awaiting" data-status-filter="awaiting" aria-pressed="false"><span>Очікують</span><strong data-count="awaiting">0</strong></button>
             <button type="button" class="result-counter" data-status-filter="notfound" aria-pressed="false"><span>Не знайдено</span><strong data-count="notfound">0</strong></button>
             <button type="button" class="result-counter counter-uncertain" data-status-filter="uncertain" aria-pressed="false"><span>Потребують перевірки</span><strong data-count="uncertain">0</strong></button>
             <button type="button" class="result-counter" data-status-filter="failed" aria-pressed="false"><span>Помилки / зупинено</span><strong data-count="failed">0</strong></button>
         </div>
         <div class="result-filters">
-            <div><label for="resultStatus" class="input-label">Статус</label><select id="resultStatus" class="form-select"><option value="all">Усі статуси</option><option value="found">Знайдено</option><option value="notfound">Не знайдено</option><option value="uncertain">Потребують перевірки</option><option value="blocked">Доступ обмежено</option><option value="unconfirmed">Не підтверджено</option><option value="error">Помилка</option><option value="cancelled">Зупинено</option><option value="failed">Помилки / зупинено</option></select></div>
+            <div><label for="resultStatus" class="input-label">Статус</label><select id="resultStatus" class="form-select"><option value="all">Усі статуси</option><option value="found">Знайдено</option><option value="awaiting">Очікують / перевіряються</option><option value="pending">Очікує</option><option value="checking">Перевіряється</option><option value="notfound">Не знайдено</option><option value="uncertain">Потребують перевірки</option><option value="blocked">Доступ обмежено</option><option value="unconfirmed">Не підтверджено</option><option value="error">Помилка</option><option value="cancelled">Зупинено</option><option value="failed">Помилки / зупинено</option></select></div>
             <div><label for="resultSite" class="input-label">Джерело</label><select id="resultSite" class="form-select"><option value="all">Усі джерела</option></select></div>
             <div class="result-text-filter"><label for="resultText" class="input-label">Пошук у результатах</label><input id="resultText" type="search" class="form-control" placeholder="Джерело, ідентифікатор або причина…" /></div>
         </div>

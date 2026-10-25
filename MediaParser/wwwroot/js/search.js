@@ -2,17 +2,20 @@
     "use strict";
     const statuses = {
         found: { label: "Знайдено", order: 0 },
-        unconfirmed: { label: "Не підтверджено", order: 1 },
-        blocked: { label: "Доступ обмежено", order: 2 },
-        error: { label: "Помилка", order: 3 },
-        cancelled: { label: "Зупинено", order: 4 },
-        notfound: { label: "Не знайдено", order: 5 },
-        legacy: { label: "Попередній результат", order: 6 }
+        checking: { label: "Перевіряється", order: 1 },
+        pending: { label: "Очікує", order: 2 },
+        unconfirmed: { label: "Не підтверджено", order: 3 },
+        blocked: { label: "Доступ обмежено", order: 4 },
+        error: { label: "Помилка", order: 5 },
+        cancelled: { label: "Зупинено", order: 6 },
+        notfound: { label: "Не знайдено", order: 7 },
+        legacy: { label: "Попередній результат", order: 8 }
     };
     const terminalStates = new Set(["completed", "cancelled", "failed"]);
     const collator = new Intl.Collator("uk", { sensitivity: "base", numeric: true });
     const matchesStatus = (status, filter) => filter === "all" || status === filter
         || (filter === "uncertain" && ["blocked", "unconfirmed"].includes(status))
+        || (filter === "awaiting" && ["pending", "checking"].includes(status))
         || (filter === "failed" && ["error", "cancelled"].includes(status));
     const normalizeText = value => String(value ?? "").toLocaleLowerCase("uk");
     const safeUrl = value => {
@@ -46,7 +49,7 @@
         });
     }
 
-    function createResultCard(result) {
+    function createResultCard(result, manualCheck) {
         const status = statuses[result.status] ? result.status : "unconfirmed";
         const card = element("article", `result-card status-${status}`);
         const heading = element("div", "result-card-heading");
@@ -68,6 +71,14 @@
             link.setAttribute("aria-label", `${status === "found" ? "Відкрити профіль" : "Відкрити сторінку перевірки"}: ${result.site}, ${result.identifier}`);
             card.append(link);
         }
+        if (manualCheck && url && ["blocked", "unconfirmed", "error", "cancelled"].includes(status)) {
+            const actions = element("div", "result-manual-actions");
+            const button = element("button", "btn btn-outline-secondary btn-sm manual-check-button", "Перевірити у Chrome вручну");
+            button.type = "button";
+            button.addEventListener("click", () => manualCheck(result));
+            actions.append(button);
+            card.append(actions);
+        }
         const details = element("details", "result-details");
         details.append(element("summary", "", "Деталі перевірки"));
         const list = element("dl");
@@ -75,7 +86,7 @@
         detail("Статус", statuses[status].label);
         if (result.reason) detail("Причина", result.reason);
         detail("Ознаки", result.evidence || "Додаткових ознак немає.");
-        detail("Перевірено", formatDate(result.checkedAt));
+        detail("Перевірено", result.checkedAt ? formatDate(result.checkedAt) : status === "checking" ? "Перевірка триває." : "Ще не перевірено.");
         details.append(list);
         card.append(details);
         return card;
@@ -138,6 +149,7 @@
         const resultText = byId("resultText");
         const storageKey = "MediaParser.lastSearch.v1";
         const selectedByMode = new Map([ ["User", new Set()], ["FullName", new Set()] ]);
+        const sourceMetadata = new Map(sources.map(source => [Number(source.dataset.sourceId), source]));
         sources.forEach(source => {
             if (source.querySelector("input").dataset.initialSelected === "true")
                 selectedByMode.get(source.dataset.mode)?.add(Number(source.dataset.sourceId));
@@ -178,6 +190,7 @@
             startButton.disabled = busy || selectedSources().length === 0;
             startButton.textContent = busy ? "Перевірка триває…" : "↗ Почати перевірку";
             form.setAttribute("aria-busy", String(busy));
+            workspace.querySelectorAll(".manual-check-button").forEach(button => button.disabled = busy);
         }
         function selectedSources() {
             return sources.filter(source => source.dataset.mode === mode && source.querySelector("input").checked);
@@ -268,8 +281,8 @@
         form.querySelectorAll('[name="mode"]').forEach(input => input.addEventListener("change", () => applyMode(input.value)));
         sources.forEach(source => source.querySelector("input").addEventListener("change", updateSelection));
         byId("sourceSearch").addEventListener("input", filterSources);
-        byId("selectVisibleSources").addEventListener("click", () => {
-            sources.filter(source => !source.hidden && source.dataset.mode === mode).forEach(source => source.querySelector("input").checked = true);
+        byId("selectAllSources").addEventListener("click", () => {
+            sources.filter(source => source.dataset.mode === mode).forEach(source => source.querySelector("input").checked = true);
             updateSelection();
         });
         byId("clearSources").addEventListener("click", () => {
@@ -354,7 +367,7 @@
             } finally { pollsInFlight.delete(id); }
         }
         function renderResults() {
-            const results = snapshot?.results || [];
+            const results = snapshot && Array.isArray(snapshot.plannedResults) ? snapshot.plannedResults : snapshot?.results || [];
             const query = normalizeText(resultText.value.trim());
             filteredResults = results.filter(result => matchesStatus(result.status, resultStatus.value)
                 && (resultSite.value === "all" || String(result.siteId) === resultSite.value)
@@ -366,11 +379,17 @@
             filteredResults.forEach((result, index) => {
                 const key = `${result.siteId}:${result.identifier}`;
                 desiredKeys.add(key);
-                const signature = JSON.stringify(result);
+                const metadata = sourceMetadata.get(Number(result.siteId));
+                const canCheckManually = snapshot && terminalStates.has(snapshot.state) && metadata?.dataset.mode === "User"
+                    && metadata.dataset.manualSupported !== "false";
+                const signature = `${JSON.stringify(result)}:${canCheckManually}`;
                 let cached = resultCards.get(key);
                 if (!cached || cached.signature !== signature) {
                     const open = cached?.node.querySelector("details")?.open;
-                    const node = createResultCard(result);
+                    const node = createResultCard(result, canCheckManually ? item => {
+                        if (activeId && !working && !submitting)
+                            beginSearch(endpoint("manual", activeId), { siteId: Number(item.siteId), identifier: item.identifier }, "manual");
+                    } : null);
                     if (open) node.querySelector("details").open = true;
                     if (cached?.node.parentNode) cached.node.replaceWith(node);
                     cached = { node, signature };
@@ -401,6 +420,7 @@
             const total = Math.max(0, Number(next.total) || 0);
             const percent = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
             byId("progressCount").textContent = `${completed} / ${total}`;
+            byId("interactiveNotice").hidden = terminal || !next.isInteractive || next.state !== "running";
             const progress = byId("searchProgressBar");
             progress.value = percent;
             progress.textContent = `${percent}%`;
@@ -423,19 +443,20 @@
                 clearPoll();
                 byId("connectionNotice").hidden = true;
             }
-            byId("jobResults").hidden = next.results.length === 0 && !terminal;
-            const fingerprint = JSON.stringify(next.results);
+            const displayResults = Array.isArray(next.plannedResults) ? next.plannedResults : next.results;
+            byId("jobResults").hidden = displayResults.length === 0 && !terminal;
+            const fingerprint = JSON.stringify(displayResults);
             if (fingerprint !== lastResultsFingerprint) {
                 lastResultsFingerprint = fingerprint;
                 const selectedSite = resultSite.value;
-                const sites = [...new Map(next.results.map(result => [String(result.siteId), result.site])).entries()]
+                const sites = [...new Map(displayResults.map(result => [String(result.siteId), result.site])).entries()]
                     .sort((left, right) => collator.compare(left[1], right[1]));
                 resultSite.replaceChildren(new Option("Усі джерела", "all"), ...sites.map(([id, site]) => new Option(site, id)));
                 resultSite.value = sites.some(([id]) => id === selectedSite) ? selectedSite : "all";
                 renderResults();
             } else if (terminal) renderResults();
         }
-        async function beginSearch(url, body, retry = false) {
+        async function beginSearch(url, body, context = "search") {
             if (working || submitting) return;
             submitting = true;
             generation++;
@@ -444,9 +465,10 @@
             setBusy(true);
             retryButton.disabled = true;
             byId("searchProgress").hidden = false;
-            byId("progressHeading").textContent = retry ? "Готуємо повторну перевірку…" : "Готуємо пошук…";
+            byId("progressHeading").textContent = context === "manual" ? "Готуємо ручну перевірку…" : context === "retry" ? "Готуємо повторну перевірку…" : "Готуємо пошук…";
             byId("progressEyebrow").textContent = "ПЕРЕВІРКА ТРИВАЄ";
             byId("progressCurrent").textContent = "Передаємо запит до черги перевірок…";
+            byId("interactiveNotice").hidden = true;
             cancelButton.hidden = true;
             try {
                 const next = await requestJson(url, "POST", body);
@@ -459,7 +481,10 @@
                 resultStatus.value = "all";
                 resultSite.value = "all";
                 resultText.value = "";
-                byId("retryNotice").hidden = !retry;
+                byId("retryNotice").hidden = context === "search";
+                byId("retryNotice").textContent = context === "manual"
+                    ? "Ручна перевірка одного джерела. Попередні результати збережено."
+                    : "Повторна перевірка проблемних джерел. Попередні результати залишаються в історії.";
                 applySnapshot(next);
                 schedulePoll();
                 byId("searchProgress").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest" });
@@ -512,7 +537,7 @@
             }
         });
         retryButton.addEventListener("click", () => {
-            if (activeId && snapshot?.canRetry && terminalStates.has(snapshot.state)) beginSearch(endpoint("retry", activeId), undefined, true);
+            if (activeId && snapshot?.canRetry && terminalStates.has(snapshot.state)) beginSearch(endpoint("retry", activeId), undefined, "retry");
         });
         byId("reconnectSearch").addEventListener("click", () => { connectionFailures = 0; schedulePoll(0); });
         [resultStatus, resultSite].forEach(input => input.addEventListener("change", renderResults));

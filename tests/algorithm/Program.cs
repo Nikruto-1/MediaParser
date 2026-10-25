@@ -111,7 +111,7 @@ foreach (var url in new[]
 {
     "https://www.facebook.com/alice", "https://www.pinterest.com/alice/", "https://www.linkedin.com/in/alice/",
     "https://www.twitch.tv/alice", "https://soundcloud.com/alice", "https://rumble.com/alice",
-    "https://medium.com/@alice", "https://open.spotify.com/user/alice", "https://www.epicgames.com/id/alice"
+    "https://medium.com/@alice", "https://open.spotify.com/user/alice"
 })
 {
     Html($"Known provider validates exact standard profile metadata: {url}", url, ProfileMeta(url, "alice"), AccountStatus.Found);
@@ -120,8 +120,49 @@ foreach (var url in new[]
 }
 Html("A LinkedIn people search cannot masquerade as one profile", "https://www.linkedin.com/search/results/people/?keywords=alice",
     ProfileMeta("https://www.linkedin.com/search/results/people/?keywords=alice", "alice"), AccountStatus.Unconfirmed);
-Html("Rumble canonical user-path redirect retains exact identity", "https://rumble.com/alice",
-    ProfileMeta("https://rumble.com/user/alice", "alice"), AccountStatus.Found, "https://rumble.com/user/alice");
+Html("Rumble user account has exact user-namespace metadata", "https://rumble.com/user/alice",
+    ProfileMeta("https://rumble.com/user/alice", "alice"), AccountStatus.Found);
+Html("Rumble root channel alias can resolve to its channel path", "https://rumble.com/alice",
+    ProfileMeta("https://rumble.com/c/alice", "alice"), AccountStatus.Found, "https://rumble.com/c/alice");
+Html("Rumble channel redirect cannot silently become a user account", "https://rumble.com/alice",
+    ProfileMeta("https://rumble.com/user/alice", "alice"), AccountStatus.Unconfirmed, "https://rumble.com/user/alice");
+Html("Rumble same spelling in channel metadata does not confirm a user", "https://rumble.com/user/alice",
+    ProfileMeta("https://rumble.com/c/alice", "alice"), AccountStatus.Unconfirmed);
+Html("Rumble same spelling in user metadata does not confirm a channel", "https://rumble.com/c/alice",
+    ProfileMeta("https://rumble.com/user/alice", "alice"), AccountStatus.Unconfirmed);
+Html("Rumble JSON-LD cannot cross from user account to channel namespace", "https://rumble.com/user/alice",
+    "<script type='application/ld+json'>{\"@type\":\"Person\",\"alternateName\":\"alice\",\"url\":\"https://rumble.com/c/alice\"}</script>", AccountStatus.Unconfirmed);
+Html("Epic authentication namespace is not a public username-profile route", "https://www.epicgames.com/id/alice",
+    ProfileMeta("https://www.epicgames.com/id/alice", "alice"), AccountStatus.Unconfirmed);
+Html("An Epic id-path 404 does not prove that a display name is absent", "https://www.epicgames.com/id/alice",
+    "<title>Page not found</title>", AccountStatus.Unconfirmed);
+Html("Epic login still reports the real access barrier", "https://www.epicgames.com/id/alice",
+    "<h1>Log in</h1>", AccountStatus.Blocked, "https://www.epicgames.com/id/login");
+foreach (var url in new[] { "https://www.epicgames.com/id/{0}", "https://open.spotify.com/user/{0}", "https://steamcommunity.com/id/{0}", "https://www.linkedin.com/in/{0}" })
+    Check($"Provider-specific input requirement is available for {url}", () =>
+    {
+        if (string.IsNullOrWhiteSpace(SourceCapabilities.GetHint(url))) throw new InvalidOperationException("Missing source hint.");
+    });
+Check("Custom domains cannot inherit provider hints by source name", () =>
+{
+    if (SourceCapabilities.GetHint("https://example.test/id/{0}") != null) throw new InvalidOperationException("Provider hint leaked to a custom host.");
+});
+Check("Unsupported Epic authentication lookup cannot offer a manual profile check", () =>
+{
+    if (SourceCapabilities.SupportsManualCheck("https://www.epicgames.com/id/{0}")) throw new InvalidOperationException("Unsupported manual lookup advertised.");
+});
+Check("Public user-profile URL can offer manual verification", () =>
+{
+    if (!SourceCapabilities.SupportsManualCheck("https://www.instagram.com/{0}/")) throw new InvalidOperationException("Public profile manual lookup missing.");
+});
+Check("Unknown providers retain conservative public lookup instead of being disabled", () =>
+{
+    if (!SourceCapabilities.SupportsPublicProfileLookup("https://example.test/{0}")) throw new InvalidOperationException("Unknown provider unexpectedly disabled.");
+});
+Check("Epic unsupported lookup capability is explicit", () =>
+{
+    if (SourceCapabilities.SupportsPublicProfileLookup("https://www.epicgames.com/id/{0}")) throw new InvalidOperationException("Unsupported lookup advertised.");
+});
 
 const string githubApi = "https://api.github.com/users/alice";
 string validApi = "{\"login\":\"alice\",\"id\":9876,\"type\":\"User\",\"html_url\":\"https://github.com/alice\"}";
@@ -148,6 +189,27 @@ using var pollCancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(250
 var loading = FakeDriver.Create(_ => "<html>Loading…</html>");
 var cancelled = await SearchAlgorithm.CheckDetailedAsync(instagram, null, source, driver: loading.Driver, cancellationToken: pollCancel.Token);
 Check("Cancellation interrupts DOM polling", () => Status(cancelled, AccountStatus.Cancelled));
+var manualTransition = FakeDriver.Create(elapsed => elapsed.TotalMilliseconds < 300 ? "<h1>Please solve the captcha</h1>" : Instagram());
+var manualElapsed = Stopwatch.StartNew();
+using var manualDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+var manualFound = await SearchAlgorithm.CheckDetailedAsync(instagram, null, source, driver: manualTransition.Driver,
+    cancellationToken: manualDeadline.Token, interactive: true);
+Check("Interactive check waits through a challenge until a person-produced profile appears", () =>
+{
+    Status(manualFound, AccountStatus.Found);
+    if (manualElapsed.Elapsed < TimeSpan.FromMilliseconds(300) || manualElapsed.Elapsed > TimeSpan.FromSeconds(2))
+        throw new InvalidOperationException("Challenge waiting did not follow the bounded polling path.");
+});
+var manualChallenge = FakeDriver.Create(_ => "<h1>Please solve the captcha</h1>");
+using var manualCancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(250));
+var manualCancelElapsed = Stopwatch.StartNew();
+var manualCancelled = await SearchAlgorithm.CheckDetailedAsync(instagram, null, source, driver: manualChallenge.Driver,
+    cancellationToken: manualCancel.Token, interactive: true);
+Check("Interactive challenge waiting can be cancelled promptly", () =>
+{
+    Status(manualCancelled, AccountStatus.Cancelled);
+    if (manualCancelElapsed.Elapsed > TimeSpan.FromSeconds(1)) throw new InvalidOperationException("Manual cancellation was delayed.");
+});
 var timeoutDriver = FakeDriver.Create(_ => "<html>Loading…</html>", navigationTimeout: true);
 var timedOut = await SearchAlgorithm.CheckDetailedAsync(instagram, null, source, driver: timeoutDriver.Driver);
 Check("Navigation timeout remains unknown and differs from user cancellation", () => Status(timedOut, AccountStatus.Unconfirmed));
@@ -183,6 +245,12 @@ Check("Repeated URL gets a fresh response, not an indefinite cached result", () 
 using var bodyCancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
 var apiCancelled = await SearchAlgorithm.CheckDetailedAsync(server.Url + "slow", null, new MediaSource { Name = "Slow", ApiUrl = server.Url + "slow" }, cancellationToken: bodyCancel.Token);
 Check("Cancellation interrupts a pending HTTP body read", () => Status(apiCancelled, AccountStatus.Cancelled));
+var manualApiDriver = FakeDriver.Create(_ => "<h1>User not found</h1>");
+using var manualApiDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+var manualApi = await SearchAlgorithm.CheckDetailedAsync(server.Url + "interactive-api", null,
+    new MediaSource { Name = "API with a browser profile", ApiUrl = server.Url + "interactive-api", SearchUrl = server.Url + "{0}" },
+    driver: manualApiDriver.Driver, cancellationToken: manualApiDeadline.Token, interactive: true);
+Check("Interactive mode checks the supplied DOM even when the source has an API URL", () => Status(manualApi, AccountStatus.NotFound));
 
 if (args.Contains("--browser", StringComparer.Ordinal))
 {

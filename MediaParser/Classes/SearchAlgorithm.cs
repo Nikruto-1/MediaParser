@@ -13,6 +13,7 @@ public static class SearchAlgorithm
 {
     private static readonly TimeSpan DomWait = TimeSpan.FromSeconds(4);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan ManualWait = TimeSpan.FromMinutes(2);
 
     public static string BuildSearchUrl(string template, string identifier)
     {
@@ -31,7 +32,7 @@ public static class SearchAlgorithm
         (await CheckDetailedAsync(url, apiKey, media, profile, driver)).ToLegacyMessage();
 
     public static async Task<AccountCheckResult> CheckDetailedAsync(string url, string? apiKey, MediaSource media,
-        string profile = "Default", IWebDriver? driver = null, CancellationToken cancellationToken = default)
+        string profile = "Default", IWebDriver? driver = null, CancellationToken cancellationToken = default, bool interactive = false)
     {
         if (cancellationToken.IsCancellationRequested) return Cancelled();
         if (!IsHttpUrl(url, out _))
@@ -40,7 +41,7 @@ public static class SearchAlgorithm
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!string.IsNullOrWhiteSpace(media.ApiUrl))
+            if (!string.IsNullOrWhiteSpace(media.ApiUrl) && !interactive)
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeout.CancelAfter(TimeSpan.FromSeconds(15));
@@ -54,7 +55,7 @@ public static class SearchAlgorithm
                 return await ProcessApiResponseAsync(response, url, media, timeout.Token);
             }
 
-            driver ??= ownedDriver = CreateChromeDriver(profile);
+            driver ??= ownedDriver = CreateChromeDriver(profile, visible: interactive);
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
@@ -65,8 +66,8 @@ public static class SearchAlgorithm
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var partial = SiteRules.EvaluateHtml(driver.PageSource, url, driver.Url, media);
-                if (partial.Status != AccountStatus.Unconfirmed) return partial;
-                return new(AccountStatus.Unconfirmed, "Сторінка не завершила завантаження за відведений час.", "Таймаут навігації браузера.");
+                if (partial.Status is AccountStatus.Found or AccountStatus.NotFound || !interactive && partial.Status != AccountStatus.Unconfirmed) return partial;
+                if (!interactive) return new(AccountStatus.Unconfirmed, "Сторінка не завершила завантаження за відведений час.", "Таймаут навігації браузера.");
             }
 
             var elapsed = Stopwatch.StartNew();
@@ -75,9 +76,20 @@ public static class SearchAlgorithm
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 result = SiteRules.EvaluateHtml(driver.PageSource, url, driver.Url, media);
-                if (result.Status != AccountStatus.Unconfirmed || media.LinkType == "FullName") return result;
-                if (elapsed.Elapsed >= DomWait) break;
-                await Task.Delay(PollInterval, cancellationToken);
+                if (interactive)
+                {
+                    // Only the person in front of Chrome handles a challenge or signs in.
+                    // We observe the resulting page and apply the same identity rules as the automatic check.
+                    if (result.Status is AccountStatus.Found or AccountStatus.NotFound or AccountStatus.Error || media.LinkType == "FullName") return result;
+                    if (elapsed.Elapsed >= ManualWait)
+                        return result with { Reason = "Час ручної перевірки минув. " + result.Reason };
+                }
+                else
+                {
+                    if (result.Status != AccountStatus.Unconfirmed || media.LinkType == "FullName") return result;
+                    if (elapsed.Elapsed >= DomWait) break;
+                }
+                await Task.Delay(interactive ? TimeSpan.FromMilliseconds(700) : PollInterval, cancellationToken);
             } while (true);
             return result;
         }
@@ -89,7 +101,9 @@ public static class SearchAlgorithm
         catch (WebDriverTimeoutException)
         { return new(AccountStatus.Unconfirmed, "Браузер не відповів за відведений час.", "Таймаут команди WebDriver."); }
         catch (WebDriverException)
-        { return new(AccountStatus.Error, "Не вдалося виконати перевірку в браузері.", "Перевірте доступність Chrome та сумісного ChromeDriver."); }
+        { return interactive
+            ? new(AccountStatus.Unconfirmed, "Ручну перевірку не завершено. Вікно Chrome закрито або браузер недоступний.", "Відкрийте ручну перевірку повторно та залиште вікно відкритим.")
+            : new(AccountStatus.Error, "Не вдалося виконати перевірку в браузері.", "Перевірте доступність Chrome та сумісного ChromeDriver."); }
         catch (ArgumentException)
         { return new(AccountStatus.Error, "Некоректні параметри джерела або профілю браузера."); }
         catch (Exception)
@@ -128,7 +142,7 @@ public static class SearchAlgorithm
         return SiteRules.EvaluateApi(content, url, finalUrl, media);
     }
 
-    public static IWebDriver CreateChromeDriver(string profile)
+    public static IWebDriver CreateChromeDriver(string profile, bool visible = false)
     {
         profile = string.IsNullOrWhiteSpace(profile) ? "Default" : profile.Trim();
         if (profile.Contains('/') || profile.Contains('\\') || profile is "." or ".." || profile.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
@@ -141,7 +155,7 @@ public static class SearchAlgorithm
         options.AddArgument($"profile-directory={profile}");
         options.AddArgument("--disable-dev-shm-usage");
         options.AddArgument("--lang=en-US");
-        options.AddArgument("--headless=new");
+        if (!visible) options.AddArgument("--headless=new");
         var driver = new ChromeDriver(options);
         driver.Manage().Timeouts().PageLoad = TimeSpan.FromSeconds(15);
         driver.Manage().Timeouts().ImplicitWait = TimeSpan.Zero;

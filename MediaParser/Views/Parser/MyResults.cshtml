@@ -46,7 +46,7 @@
                             <div class="result-card-heading"><div class="result-identity"><span class="source-avatar" aria-hidden="true">@result.Site.FirstOrDefault()</span><div><h3 class="result-source">@result.Site</h3><p class="result-identifier">@result.Identifier</p></div></div><span class="status-pill status-@result.Status">@result.Label</span></div>
                             <p class="result-reason">@result.Reason</p>
                             @if (IsWebUrl(result.ProfileUrl)) { <a class="result-url" href="@result.ProfileUrl" target="_blank" rel="noopener noreferrer">@result.ProfileUrl <span aria-hidden="true">↗</span></a> }
-                            <details class="result-details"><summary>Деталі перевірки</summary><dl><dt>Статус</dt><dd>@result.Label</dd><dt>Причина</dt><dd>@result.Reason</dd><dt>Ознаки</dt><dd>@(string.IsNullOrWhiteSpace(result.Evidence) ? "Додаткових ознак немає." : result.Evidence)</dd><dt>Перевірено</dt><dd><time datetime="@result.CheckedAt.ToString("O")" data-local-time="true">@result.CheckedAt.UtcDateTime.ToString("dd.MM.yyyy HH:mm:ss") UTC</time></dd></dl></details>
+                            <details class="result-details"><summary>Деталі перевірки</summary><dl><dt>Статус</dt><dd>@result.Label</dd><dt>Причина</dt><dd>@result.Reason</dd><dt>Ознаки</dt><dd>@(string.IsNullOrWhiteSpace(result.Evidence) ? "Додаткових ознак немає." : result.Evidence)</dd><dt>Перевірено</dt><dd><time datetime="@result.CheckedAt?.ToString("O")" data-local-time="true">@(result.CheckedAt?.UtcDateTime.ToString("dd.MM.yyyy HH:mm:ss") ?? "Не перевірено") UTC</time></dd></dl></details>
                         </article>
                     }
                 }

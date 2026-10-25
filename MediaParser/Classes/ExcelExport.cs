@@ -65,7 +65,7 @@ namespace MediaParser.Classes
                         foreach (var detail in result.Details)
                             WriteRow(writer, row++, new[]
                             {
-                                detail.Identifier, detail.CheckedAt.ToString("yyyy-MM-dd HH:mm 'UTC'"), detail.Site,
+                                detail.Identifier, detail.CheckedAt?.ToString("yyyy-MM-dd HH:mm 'UTC'") ?? string.Empty, detail.Site,
                                 $"{detail.Label}: {detail.Reason}" + (string.IsNullOrWhiteSpace(detail.Evidence) ? "" : $" ({detail.Evidence})"), detail.ProfileUrl
                             });
                         continue;

@@ -18,6 +18,7 @@ public sealed class SearchJobService : BackgroundService
         public string State { get; set; } = "queued";
         public int Completed { get; set; }
         public string? CurrentSite { get; set; }
+        public int? CurrentSiteId { get; set; }
         public string? CurrentIdentifier { get; set; }
         public string? Error { get; set; }
         public DateTimeOffset? FinishedAt { get; set; }
@@ -51,7 +52,11 @@ public sealed class SearchJobService : BackgroundService
         });
     }
 
-    public SearchJobStartResult TryStart(string owner, IReadOnlyList<SearchWorkItem> items)
+    public SearchJobStartResult TryStart(string owner, IReadOnlyList<SearchWorkItem> items) =>
+        TryStartCore(owner, items, Array.Empty<SearchResultItem>());
+
+    private SearchJobStartResult TryStartCore(string owner, IReadOnlyList<SearchWorkItem> items,
+        IReadOnlyList<SearchResultItem> retainedResults)
     {
         lock (_gate)
         {
@@ -79,8 +84,10 @@ public sealed class SearchJobService : BackgroundService
                 Owner = owner,
                 StartedAt = _clock.GetUtcNow(),
                 Items = items.GroupBy(item => (item.Source.Id, item.Identifier))
-                    .Select(group => new SearchWorkItem(CloneSource(group.First().Source), group.Key.Identifier)).ToList()
+                    .Select(group => new SearchWorkItem(CloneSource(group.First().Source), group.Key.Identifier, group.First().Interactive)).ToList(),
+                Completed = retainedResults.Count
             };
+            job.Results.AddRange(retainedResults);
             if (!_queue.Writer.TryWrite(job))
             {
                 job.Cancellation.Dispose();
@@ -136,9 +143,46 @@ public sealed class SearchJobService : BackgroundService
             if (!IsTerminal(job)) return new(null, "Спочатку завершіть або зупиніть поточний пошук.", 409);
             var retry = job.Items.Where(item => !job.Results.Any(result =>
                 result.SiteId == item.Source.Id && result.Identifier == item.Identifier &&
-                result.Outcome is AccountStatus.Found or AccountStatus.NotFound)).ToList();
+                result.Outcome is AccountStatus.Found or AccountStatus.NotFound))
+                .Select(item => new SearchWorkItem(item.Source, item.Identifier)).ToList();
             if (retry.Count == 0) return new(null, "Немає невдалих перевірок для повтору.", 400);
             return TryStart(owner, retry);
+        }
+    }
+
+    public SearchJobStartResult TryStartManual(string owner, Guid id, int siteId, string identifier)
+    {
+        lock (_gate)
+        {
+            var original = FindCore(owner, id);
+            if (original == null) return new(null, "Пошук не знайдено або термін його зберігання минув.", 404);
+            if (!IsTerminal(original)) return new(null, "Дочекайтеся завершення або зупиніть поточний пошук.", 409);
+            var item = original.Items.FirstOrDefault(value => value.Source.Id == siteId && value.Identifier == identifier);
+            var result = original.Results.FirstOrDefault(value => value.SiteId == siteId && value.Identifier == identifier);
+            if (item == null || result == null || result.Outcome is AccountStatus.Found or AccountStatus.NotFound)
+                return new(null, "Оберіть непідтверджений результат, обмеження доступу або помилку для ручної перевірки.", 400);
+            if (item.Source.LinkType == "FullName")
+                return new(null, "Список результатів за ПІБ перевірте вручну за посиланням на джерело.", 400);
+            if (string.IsNullOrWhiteSpace(item.Source.SearchUrl))
+                return new(null, "У джерела немає публічної адреси профілю для відкриття у Chrome.", 400);
+            if (!Classes.SourceCapabilities.SupportsPublicProfileLookup(item.Source.SearchUrl))
+                return new(null, "Це джерело не має публічного пошуку профілю за цим URL. Перегляньте підказку джерела.", 400);
+            try { Classes.SearchAlgorithm.BuildSearchUrl(item.Source.SearchUrl, identifier); }
+            catch (Exception exception) when (exception is ArgumentException or FormatException)
+            { return new(null, "У джерела неправильна адреса профілю. Виправте його налаштування.", 400); }
+            if (_jobs.Values.Any(job => job.Items.Any(value => value.Interactive) && (!IsTerminal(job) || job.WorkerActive)))
+                return new(null, "Ручна перевірка вже відкрита у Chrome. Завершіть або зупиніть її.", 429);
+
+            var retained = original.Results.Where(value => value.SiteId != siteId || value.Identifier != identifier).ToArray();
+            var items = original.Items.Select(value =>
+            {
+                var source = CloneSource(value.Source);
+                bool interactive = source.Id == siteId && value.Identifier == identifier;
+                if (interactive) { source.ApiUrl = null; source.ApiKey = null; }
+                return new SearchWorkItem(source, value.Identifier, interactive);
+            }).ToArray();
+            // Other results remain visible and keep their original verification times.
+            return TryStartCore(owner, items, retained);
         }
     }
 
@@ -171,13 +215,17 @@ public sealed class SearchJobService : BackgroundService
                         lock (_gate)
                         {
                             if (IsTerminal(job)) break;
+                            if (job.Results.Any(result => result.SiteId == item.Source.Id && result.Identifier == item.Identifier)) continue;
                             job.CurrentSite = item.Source.Name;
+                            job.CurrentSiteId = item.Source.Id;
                             job.CurrentIdentifier = item.Identifier;
                         }
                         AccountCheckResult check;
                         try
                         {
-                            check = await _checker.CheckAsync(item.Source, item.Identifier, cancellation.Token);
+                            check = item.Interactive
+                                ? await _checker.CheckInteractiveAsync(item.Source, item.Identifier, cancellation.Token)
+                                : await _checker.CheckAsync(item.Source, item.Identifier, cancellation.Token);
                         }
                         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { throw; }
                         catch (Exception exception)
@@ -255,6 +303,7 @@ public sealed class SearchJobService : BackgroundService
         job.State = state;
         job.FinishedAt = _clock.GetUtcNow();
         job.CurrentSite = null;
+        job.CurrentSiteId = null;
         job.CurrentIdentifier = null;
     }
 
@@ -269,16 +318,22 @@ public sealed class SearchJobService : BackgroundService
             catch (FormatException) { }
         }
         return new(item.Source.Id, item.Source.Name, item.Identifier, profileUrl, check.Status,
-            check.Label, check.Reason, check.Evidence, _clock.GetUtcNow());
+            check.Label, check.Reason, check.Evidence,
+            check.Status is AccountStatus.Pending or AccountStatus.Checking ? null : _clock.GetUtcNow());
     }
 
     private static bool IsTerminal(Job job) => job.State is "completed" or "cancelled" or "failed";
 
-    private static SearchJobSnapshot Snapshot(Job job) => new(job.Id, job.State, job.Items.Count, job.Completed,
+    private SearchJobSnapshot Snapshot(Job job) => new(job.Id, job.State, job.Items.Count, job.Completed,
         job.CurrentSite, job.CurrentIdentifier, job.Results.ToArray(),
         IsTerminal(job) && (job.Completed < job.Items.Count || job.Results.Any(result =>
             result.Outcome is not (AccountStatus.Found or AccountStatus.NotFound))),
-        job.Error, job.State == "cancelled", job.StartedAt);
+        job.Error, job.State == "cancelled", job.StartedAt,
+        job.Items.Select(item => job.Results.FirstOrDefault(result => result.SiteId == item.Source.Id && result.Identifier == item.Identifier)
+            ?? MakeResult(item, job.State == "running" && job.CurrentSiteId == item.Source.Id && job.CurrentIdentifier == item.Identifier
+                ? new(AccountStatus.Checking, item.Interactive ? "Очікуємо ручної перевірки у відкритому Chrome." : "Перевіряємо це джерело.")
+                : new(AccountStatus.Pending, IsTerminal(job) ? "Перевірка не завершилася. Можна повторити." : "Джерело в черзі; перевірка ще не почалася."))).ToArray(),
+        job.Items.Any(item => item.Interactive));
 
     private int PruneExpiredCore()
     {

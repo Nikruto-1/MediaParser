@@ -51,11 +51,23 @@ def api(path, data=None, *, csrf=None, browser=client):
     except json.JSONDecodeError: data = {}
     return status, data
 
+def validate_planned(job):
+    planned = job.get('plannedResults')
+    assert isinstance(planned, list) and len(planned) == job['total'], 'Missing selected sources in planned rows'
+    assert len({(row['siteId'], row['identifier']) for row in planned}) == job['total'], 'Duplicate planned work items'
+    assert sum(row['status'] == 'checking' for row in planned) <= 1, 'More than one active check inside a job'
+    assert all(row.get('checkedAt') is None for row in planned if row['status'] in {'pending', 'checking'}), 'Unfinished rows have check timestamps'
+    assert all(row['status'] not in {'pending', 'checking'} for row in job['results']), 'Placeholders were published as finished results'
+    assert job['completed'] <= len(job['results']) <= job['total'], 'Placeholder rows changed completed progress'
+    serialized = json.dumps(job)
+    assert 'not-a-real-secret' not in serialized and 'apiKey' not in serialized and 'apiUrl' not in serialized, 'Public plan contains private API data'
+
 def finish(job_id):
     deadline, last_completed = time.monotonic() + 20, -1
     while time.monotonic() < deadline:
         status, job = api('/Parser/SearchProgress/' + job_id)
         assert status == 200
+        validate_planned(job)
         assert job['completed'] >= last_completed, 'Progress moved backwards'
         last_completed = job['completed']
         if job['state'] in {'completed','cancelled','failed'}: return job
@@ -115,6 +127,9 @@ try:
     print('PASS Temporary API sources appear in inline selection')
     status, job = api('/Parser/StartSearch',{'identifiers':['fixture_user'],'mode':'User','sourceIds':[ids[k] for k in ['ok','missing','blocked','error']]},csrf=csrf)
     assert status == 202
+    validate_planned(job)
+    assert not job['isInteractive'] and job['completed'] == 0 and job['results'] == []
+    assert all(row['status'] == 'pending' for row in job['plannedResults']), 'Admission response does not expose every selected source as pending'
     job = finish(job['id'])
     assert job['completed'] == job['total'] == 4
     assert {item['status'] for item in job['results']} == {'unconfirmed','notfound','blocked','error'}
@@ -126,13 +141,25 @@ try:
     stranger_token = token(stranger_page)
     for route in ['CancelSearch','RetrySearch']:
         assert request(f'/Parser/{route}/{job["id"]}',{},csrf=stranger_token,browser=stranger)[0] == 404
-    print('PASS Another session cannot read, export, cancel, or retry this job')
+    manual = '/Parser/ManualCheck/' + job['id']
+    unresolved = {'siteId':ids['ok'],'identifier':'fixture_user'}
+    # These checks must reject before creating interactive work; the smoke runner never opens Chrome.
+    assert api(manual,unresolved)[0] == 400, 'Manual check accepted missing CSRF'
+    assert api(manual,unresolved,csrf=stranger_token,browser=stranger)[0] == 404
+    assert api('/Parser/ManualCheck/'+str(uuid.uuid4()),unresolved,csrf=csrf)[0] == 404
+    assert api(manual,{},csrf=csrf)[0] == 400
+    assert api(manual,{'siteId':2147483647,'identifier':'fixture_user'},csrf=csrf)[0] == 400
+    assert api(manual,{'siteId':ids['missing'],'identifier':'fixture_user'},csrf=csrf)[0] == 400, 'Confirmed absent result admitted a manual browser'
+    print('PASS Another session cannot access job actions; manual rejects CSRF, missing jobs, invalid sources, and resolved rows')
     status, retry = api('/Parser/RetrySearch/'+job['id'],{},csrf=csrf)
     assert status == 202 and retry['total'] == 3
     finish(retry['id'])
     print('PASS Retry skips confirmed absent results and rechecks only unresolved outcomes')
     status, slow = api('/Parser/StartSearch',{'identifiers':['first','second','third'],'mode':'User','sourceIds':[ids['slow']]},csrf=csrf)
     assert status == 202
+    validate_planned(slow)
+    assert len(slow['plannedResults']) == 3 and all(row['status'] == 'pending' for row in slow['plannedResults'])
+    assert api('/Parser/ManualCheck/'+slow['id'],{'siteId':ids['slow'],'identifier':'first'},csrf=csrf)[0] == 409, 'Manual check admitted an unfinished original job'
     assert api('/Parser/StartSearch',{'identifiers':['duplicate'],'mode':'User','sourceIds':[ids['slow']]},csrf=csrf)[0] == 409
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -144,6 +171,7 @@ try:
     _, cancelled = api('/Parser/CancelSearch/'+slow['id'],{},csrf=csrf)
     assert time.monotonic()-started < 2
     assert cancelled['state'] == 'cancelled' and cancelled['completed'] == 1
+    validate_planned(cancelled)
     assert len(cancelled['results']) == 3
     assert sum(row['status']=='cancelled' for row in cancelled['results']) == 2
     print('PASS Cancel is prompt, retains partial results, and prevents duplicate work')
