@@ -42,17 +42,27 @@
                 {
                     @foreach (var result in search.Details!.OrderBy(result => StatusOrder(result.Outcome)).ThenBy(result => result.Site))
                     {
-                        var registryResult = result.Declarations != null || result.DeclarationTotal.HasValue || IsOfficialRegistryUrl(result.ProfileUrl);
+                        var youControlResult = MediaParser.Services.Declarations.YouControlDeclarationSource.IsSearchUrl(result.ProfileUrl);
+                        var registryResult = !youControlResult && (result.Declarations != null || result.DeclarationTotal.HasValue || IsOfficialRegistryUrl(result.ProfileUrl));
+                        var hasInventory = result.Declarations != null || result.DeclarationTotal.HasValue;
                         var declarations = result.Declarations?.Take(20).ToList() ?? new List<DeclarationSummary>();
                         var declarationTotal = result.DeclarationTotal.GetValueOrDefault(-1);
                         <article class="result-card status-@result.Status" data-result-card data-status="@result.Status" data-site="@result.Site">
                             <div class="result-card-heading"><div class="result-identity"><span class="source-avatar" aria-hidden="true">@result.Site.FirstOrDefault()</span><div><h3 class="result-source">@result.Site</h3><p class="result-identifier">@result.Identifier</p></div></div><span class="status-pill status-@result.Status">@result.Label</span></div>
                             <p class="result-reason">@result.Reason</p>
-                            @if (!registryResult && IsWebUrl(result.ProfileUrl)) { <a class="result-url" href="@result.ProfileUrl" target="_blank" rel="noopener noreferrer">@result.ProfileUrl <span aria-hidden="true">↗</span></a> }
+                            @if (!registryResult && !youControlResult && IsWebUrl(result.ProfileUrl)) { <a class="result-url" href="@result.ProfileUrl" target="_blank" rel="noopener noreferrer">@result.ProfileUrl <span aria-hidden="true">↗</span></a> }
+                            @if (youControlResult)
+                            {
+                                <section class="declaration-results" aria-label="Пошук декларацій на YouControl">
+                                    <h4>Пошук декларацій на YouControl</h4>
+                                    <p class="field-hint">Автоматичне отримання даних не підключено. Результати перегляньте в каталозі YouControl; збіг ПІБ не підтверджує особу.</p>
+                                    <a class="declaration-link declaration-all" href="@result.ProfileUrl" target="_blank" rel="noopener noreferrer">Шукати декларації на YouControl <span aria-hidden="true">↗</span></a>
+                                </section>
+                            }
                             @if (registryResult)
                             {
                                 <section class="declaration-results" aria-label="Публічні декларації НАЗК">
-                                    <div class="declaration-heading"><h4>Публічні декларації НАЗК</h4><span class="declaration-count">@(declarationTotal >= declarations.Count ? $"Показано {declarations.Count} із {declarationTotal}" : $"Показано {declarations.Count} документів")</span></div>
+                                    <div class="declaration-heading"><h4>Публічні декларації НАЗК</h4>@if (hasInventory) { <span class="declaration-count">@(declarationTotal >= declarations.Count ? $"Показано {declarations.Count} із {declarationTotal}" : $"Показано {declarations.Count} документів")</span> }</div>
                                     <p class="identity-notice">Збіг ПІБ не підтверджує особу. Відсутність декларацій не доводить, що людина не працює або не працювала в державних органах.</p>
                                     @if (declarations.Count > 0)
                                     {
@@ -84,7 +94,7 @@
                                             <p class="declaration-limit">Показано першу сторінку документів. Повний список перевірте в офіційному реєстрі.</p>
                                         }
                                     }
-                                    else
+                                    else if (hasInventory)
                                     {
                                         <p class="declaration-empty">Документів для показу немає. Перегляньте причину результату та уточніть ПІБ в офіційному реєстрі.</p>
                                     }
@@ -94,7 +104,7 @@
                                     }
                                 </section>
                             }
-                            <details class="result-details"><summary>Деталі перевірки</summary><dl><dt>Статус</dt><dd>@result.Label</dd><dt>Причина</dt><dd>@result.Reason</dd><dt>Ознаки</dt><dd>@(string.IsNullOrWhiteSpace(result.Evidence) ? "Додаткових ознак немає." : result.Evidence)</dd><dt>Перевірено</dt><dd><time datetime="@result.CheckedAt?.ToString("O")" data-local-time="true">@(result.CheckedAt?.UtcDateTime.ToString("dd.MM.yyyy HH:mm:ss") ?? "Не перевірено") UTC</time></dd></dl></details>
+                            <details class="result-details"><summary>Деталі перевірки</summary><dl><dt>Статус</dt><dd>@result.Label</dd><dt>Причина</dt><dd>@result.Reason</dd><dt>Ознаки</dt><dd>@(string.IsNullOrWhiteSpace(result.Evidence) ? "Додаткових ознак немає." : result.Evidence)</dd><dt>@(youControlResult ? "Посилання підготовлено" : "Перевірено")</dt><dd><time datetime="@result.CheckedAt?.ToString("O")" data-local-time="true">@(result.CheckedAt?.UtcDateTime.ToString("dd.MM.yyyy HH:mm:ss") ?? "Не перевірено") UTC</time></dd></dl></details>
                         </article>
                     }
                 }

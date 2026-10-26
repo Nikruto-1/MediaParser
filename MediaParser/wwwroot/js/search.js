@@ -30,6 +30,13 @@
             return url.origin === "https://public.nazk.gov.ua" && !url.username && !url.password ? url.href : null;
         } catch { return null; }
     };
+    const youControlSearchUrl = value => {
+        try {
+            const url = new URL(value);
+            return url.origin === "https://youcontrol.com.ua" && !url.username && !url.password && !url.hash
+                && url.pathname === "/catalog/individuals/search/" ? url.href : null;
+        } catch { return null; }
+    };
     const officialDeclarationUrl = (value, id) => {
         const official = officialRegistryUrl(value);
         if (!official || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id || ""))) return null;
@@ -64,12 +71,14 @@
     }
 
     function createDeclarationSection(result) {
+        const hasInventory = Array.isArray(result.declarations) || Number.isInteger(result.declarationTotal);
         const declarations = Array.isArray(result.declarations) ? result.declarations.filter(item => item && typeof item === "object").slice(0, 20) : [];
         const total = Number.isInteger(result.declarationTotal) && result.declarationTotal >= declarations.length ? result.declarationTotal : null;
         const section = element("section", "declaration-results");
         section.setAttribute("aria-label", "Публічні декларації НАЗК");
         const heading = element("div", "declaration-heading");
-        heading.append(element("h4", "", "Публічні декларації НАЗК"), element("span", "declaration-count",
+        heading.append(element("h4", "", "Публічні декларації НАЗК"));
+        if (hasInventory) heading.append(element("span", "declaration-count",
             total !== null ? `Показано ${declarations.length} із ${total}` : `Показано ${declarations.length} документів`));
         section.append(heading, element("p", "identity-notice", "Збіг ПІБ не підтверджує особу. Відсутність декларацій не доводить, що людина не працює або не працювала в державних органах."));
         if (declarations.length) {
@@ -104,13 +113,29 @@
             section.append(list);
             if ((total !== null && total > declarations.length) || declarations.length === 20)
                 section.append(element("p", "declaration-limit", "Показано першу сторінку документів. Повний список перевірте в офіційному реєстрі."));
-        } else {
+        } else if (hasInventory) {
             section.append(element("p", "declaration-empty", "Документів для показу немає. Перегляньте причину результату та уточніть ПІБ в офіційному реєстрі."));
         }
         const registry = officialRegistryUrl(result.profileUrl);
         if (registry) {
             const link = element("a", "declaration-link declaration-all", "Усі результати в офіційному реєстрі ↗");
             link.href = registry;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            section.append(link);
+        }
+        return section;
+    }
+
+    function createYouControlSection(result) {
+        const section = element("section", "declaration-results");
+        section.setAttribute("aria-label", "Пошук декларацій на YouControl");
+        section.append(element("h4", "", "Пошук декларацій на YouControl"),
+            element("p", "field-hint", "Автоматичне отримання даних не підключено. Результати перегляньте в каталозі YouControl; збіг ПІБ не підтверджує особу."));
+        const url = youControlSearchUrl(result.profileUrl);
+        if (url) {
+            const link = element("a", "declaration-link declaration-all", "Шукати декларації на YouControl ↗");
+            link.href = url;
             link.target = "_blank";
             link.rel = "noopener noreferrer";
             section.append(link);
@@ -131,9 +156,10 @@
         heading.append(identity, element("span", `status-pill status-${status}`, result.label || statuses[status].label));
         card.append(heading);
         if (result.reason) card.append(element("p", "result-reason", result.reason));
-        const registryResult = isDeclarationResult(result);
-        const url = registryResult ? officialRegistryUrl(result.profileUrl) : safeUrl(result.profileUrl);
-        if (url && !registryResult) {
+        const youControlResult = !!youControlSearchUrl(result.profileUrl);
+        const registryResult = !youControlResult && isDeclarationResult(result);
+        const url = youControlResult ? youControlSearchUrl(result.profileUrl) : registryResult ? officialRegistryUrl(result.profileUrl) : safeUrl(result.profileUrl);
+        if (url && !registryResult && !youControlResult) {
             const link = element("a", "result-url", `${url} ↗`);
             link.href = url;
             link.target = "_blank";
@@ -141,7 +167,7 @@
             link.setAttribute("aria-label", `${registryResult ? "Відкрити офіційний реєстр НАЗК" : status === "found" ? "Відкрити профіль" : "Відкрити сторінку перевірки"}: ${result.site}, ${result.identifier}`);
             card.append(link);
         }
-        if (manualCheck && url && ["blocked", "unconfirmed", "error", "cancelled"].includes(status)) {
+        if (manualCheck && url && !youControlResult && ["blocked", "unconfirmed", "error", "cancelled"].includes(status)) {
             const actions = element("div", "result-manual-actions");
             const button = element("button", "btn btn-outline-secondary btn-sm manual-check-button", "Перевірити у Chrome вручну");
             button.type = "button";
@@ -150,6 +176,7 @@
             card.append(actions);
         }
         if (registryResult && !["pending", "checking"].includes(status)) card.append(createDeclarationSection(result));
+        if (youControlResult && !["pending", "checking"].includes(status)) card.append(createYouControlSection(result));
         const details = element("details", "result-details");
         details.append(element("summary", "", "Деталі перевірки"));
         const list = element("dl");
@@ -157,7 +184,7 @@
         detail("Статус", result.label || statuses[status].label);
         if (result.reason) detail("Причина", result.reason);
         detail("Ознаки", result.evidence || "Додаткових ознак немає.");
-        detail("Перевірено", result.checkedAt ? formatDate(result.checkedAt) : status === "checking" ? "Перевірка триває." : "Ще не перевірено.");
+        detail(youControlResult ? "Посилання підготовлено" : "Перевірено", result.checkedAt ? formatDate(result.checkedAt) : status === "checking" ? "Перевірка триває." : "Ще не перевірено.");
         details.append(list);
         card.append(details);
         return card;

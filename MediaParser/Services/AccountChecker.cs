@@ -38,6 +38,8 @@ public sealed class AccountChecker : IAccountChecker
     private async Task<AccountCheckResult> CheckCoreAsync(MediaSource source, string identifier, CancellationToken cancellationToken, bool interactive,
         CaptchaSolveBudget? captchaBudget = null, Action<string>? onProgress = null)
     {
+        if (YouControlDeclarationSource.IsSource(source))
+            return YouControlDeclarationSource.PrepareSearch(identifier, cancellationToken);
         if (NazkDeclarationSource.IsSource(source))
             return _declarations is null
                 ? new(AccountStatus.Unconfirmed, "Пошук декларацій НАЗК зараз недоступний.")

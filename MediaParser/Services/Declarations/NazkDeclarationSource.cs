@@ -6,7 +6,7 @@ public static class NazkDeclarationSource
 {
     public const string Name = "НАЗК — декларації";
     public const string ApiTemplate = "https://public-api.nazk.gov.ua/v2/documents/list?query={0}&full_search=0&page=1";
-    public const string SearchTemplate = "https://public.nazk.gov.ua/documents/list?query={0}";
+    public const string SearchTemplate = "https://public.nazk.gov.ua/documents/list?q={0}";
 
     public static bool IsSource(MediaSource source) => source.LinkType == "FullName" &&
         (IsOfficialEndpoint(source.ApiUrl, "public-api.nazk.gov.ua", "/v2/documents/list") ||

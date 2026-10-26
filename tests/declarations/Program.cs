@@ -11,6 +11,7 @@ using OpenQA.Selenium;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
+    ("YouControl prepares a public search handoff without requesting data or solving CAPTCHA", YouControlHandoff),
     ("NAZK dispatch recognizes only official full-name endpoints", SourceRecognition),
     ("NAZK searches use their dedicated client without Chrome, credentials, or CAPTCHA", DedicatedDispatch),
     ("Public API requests keep a fixed scope and escape full-name query text", FixedRequestAndEscaping),
@@ -60,6 +61,7 @@ static Task SourceRecognition()
     var searchUrl = new Uri(NazkDeclarationSource.SearchUrl("Петро & Іванович"));
     Assert(searchUrl.Host == "public.nazk.gov.ua" && Uri.UnescapeDataString(searchUrl.Query).Contains("Петро & Іванович"),
         "The public registry link lost its full-name query.");
+    Assert(ParseQuery(searchUrl.Query).ContainsKey("q"), "The public search link must use the form's q parameter; query belongs to the JSON API.");
     return Task.CompletedTask;
 }
 
@@ -352,6 +354,52 @@ static async Task<AccountCheckResult> SearchFixture(string payload)
     using var handler = new FakeHandler((_, _) => Task.FromResult(Response(HttpStatusCode.OK, payload)));
     using var client = new HttpClient(handler);
     return await new NazkDeclarationSearch(client).SearchAsync("Тестовий Користувач", CancellationToken.None);
+}
+
+static async Task YouControlHandoff()
+{
+    var source = new MediaSource { Name = YouControlDeclarationSource.Name, LinkType = "FullName",
+        SearchUrl = YouControlDeclarationSource.SearchTemplate, ApiKey = "TEST-ONLY-unused-key" };
+    Assert(YouControlDeclarationSource.IsSource(source), "The default YouControl source was not recognized.");
+    source.Name = "Renamed catalog";
+    Assert(YouControlDeclarationSource.IsSource(source), "Changing the display name broke the public search handoff.");
+    foreach (var invalid in new[] { "http://youcontrol.com.ua/catalog/individuals/search/?q={0}",
+        "https://youcontrol.com.ua.attacker.test/catalog/individuals/search/?q={0}",
+        "https://youcontrol.com.ua:444/catalog/individuals/search/?q={0}",
+        "https://user:password@youcontrol.com.ua/catalog/individuals/search/?q={0}",
+        "https://youcontrol.com.ua/catalog/individuals/?q={0}",
+        "https://youcontrol.com.ua/catalog/individuals/search/?q={0}#fragment" })
+    {
+        source.SearchUrl = invalid;
+        Assert(!YouControlDeclarationSource.IsSource(source), "An unsafe or different endpoint was recognized as the YouControl catalog search.");
+    }
+    source.SearchUrl = YouControlDeclarationSource.SearchTemplate;
+    source.LinkType = "User";
+    Assert(!YouControlDeclarationSource.IsSource(source), "The declaration catalog accepted nickname mode.");
+    source.LinkType = "FullName";
+    source.ApiUrl = "https://custom.example/{0}";
+    Assert(!YouControlDeclarationSource.IsSource(source), "A custom API source was overridden by the handoff.");
+    source.ApiUrl = null;
+    var query = "Тестовий & Інший?q=wrong#fragment";
+    var uri = new Uri(YouControlDeclarationSource.SearchUrl(query));
+    var parsed = ParseQuery(uri.Query);
+    Assert(uri.Host == "youcontrol.com.ua" && uri.AbsolutePath == "/catalog/individuals/search/" &&
+        parsed.Count == 1 && parsed["q"] == query && uri.Fragment.Length == 0, "Input changed the public search scope.");
+    var unusedDeclarations = new FakeDeclarations(new(AccountStatus.Error, "Must not be used"));
+    var captcha = new ForbiddenCaptcha();
+    var checker = new AccountChecker(captcha, unusedDeclarations);
+    var budget = new CaptchaSolveBudget(2);
+    var results = new[] { await checker.CheckAsync(source, query, CancellationToken.None),
+        await checker.CheckWithCaptchaAsync(source, query, budget, _ => throw new Exception("Unexpected CAPTCHA progress"), CancellationToken.None),
+        await checker.CheckInteractiveAsync(source, query, CancellationToken.None) };
+    Assert(results.All(result => result.Status == AccountStatus.Unconfirmed && result.Declarations == null &&
+        result.DeclarationTotal == null && result.Reason.Contains("YouControl") && result.Evidence!.Contains("не підключено")),
+        "A prepared link invented a declaration result or document count.");
+    Assert(unusedDeclarations.Calls == 0 && captcha.Calls == 0 && budget.Used == 0, "The handoff touched API or CAPTCHA services.");
+    using var cancellation = new CancellationTokenSource();
+    cancellation.Cancel();
+    Assert((await checker.CheckAsync(source, query, cancellation.Token)).Status == AccountStatus.Cancelled,
+        "Cancelled handoff continued preparing a result.");
 }
 
 static MediaSource Source() => new()

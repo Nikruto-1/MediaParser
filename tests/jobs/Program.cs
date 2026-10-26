@@ -12,6 +12,7 @@ using MediaParser.Repositories;
 using MediaParser.Services;
 using MediaParser.Services.DBServices;
 using MediaParser.Services.Captcha;
+using MediaParser.Services.Declarations;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -36,7 +37,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Manual checking targets one source and identifier pair without changing its other identifiers", ManualTargetPairIsolation),
     ("Ordinary retry of an unresolved manual result uses only the non-interactive checker", OrdinaryRetryIsNotInteractive),
     ("Declaration metadata survives progress and history and is retained when other sources are retried or checked manually", DeclarationMetadataRoundtrip),
-    ("Excel exports rich declarations on a linked worksheet and preserves the five legacy result columns", DeclarationExcelExport)
+    ("Excel exports rich declarations on a linked worksheet and preserves the five legacy result columns", DeclarationExcelExport),
+    ("YouControl handoff keeps its public URL in history and export and is not retried as an automated lookup", YouControlSearchRoundtrip)
 };
 var failures = 0;
 foreach (var test in tests)
@@ -731,6 +733,52 @@ static Task DeclarationExcelExport()
     Assert(emptyArchive.GetEntry("xl/worksheets/sheet2.xml") == null,
         "An export without declaration metadata gained an unnecessary extra worksheet.");
     return Task.CompletedTask;
+}
+
+static async Task YouControlSearchRoundtrip()
+{
+    await using var fixture = await Fixture.Create();
+    const string identifier = "Тестовий Користувач";
+    const string secret = "TEST-ONLY-private-source-query";
+    var source = new MediaSource { Id = 21, Name = YouControlDeclarationSource.Name, LinkType = "FullName",
+        SearchUrl = YouControlDeclarationSource.SearchTemplate + "&token=" + secret, ApiKey = secret };
+    var original = Started(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(source, identifier), Work(1)[0] }));
+    var prepared = await fixture.Checker.Next();
+    prepared.Response.TrySetResult(YouControlDeclarationSource.PrepareSearch(identifier, CancellationToken.None));
+    var other = await fixture.Checker.Next();
+    other.Finish(AccountStatus.Blocked);
+    var finished = await fixture.Finished("owner", original.Id);
+    var row = finished.Results.Single(item => item.SiteId == 21);
+    Assert(row.ProfileUrl == YouControlDeclarationSource.SearchUrl(identifier) && row.Outcome == AccountStatus.Unconfirmed &&
+        row.Declarations == null && row.DeclarationTotal == null && finished.CanRetry,
+        "The handoff did not retain its public search URL or invented a result inventory.");
+    Assert(!JsonSerializer.Serialize(finished).Contains(secret), "The public search URL leaked source credentials or private parameters.");
+    var session = new MemorySession();
+    var accessor = new HttpContextAccessor { HttpContext = new DefaultHttpContext { Session = session } };
+    var repository = new ResultsRepository(accessor);
+    repository.SaveJob(finished);
+    var history = repository.GetListResults();
+    var restored = history.SelectMany(item => item.Details).Single(item => item.SiteId == 21);
+    Assert(restored.ProfileUrl == row.ProfileUrl && restored.Declarations == null && restored.DeclarationTotal == null,
+        "History changed the prepared search into an absent or found declaration result.");
+    using var stream = new MemoryStream(ExcelExport.GenerateExcelFile(history));
+    using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
+    using var reader = new StreamReader(archive.GetEntry("xl/worksheets/sheet1.xml")!.Open());
+    Assert((await reader.ReadToEndAsync()).Contains("youcontrol.com.ua/catalog/individuals/search/") &&
+        archive.GetEntry("xl/worksheets/sheet2.xml") == null, "Export omitted the search URL or invented declaration rows.");
+    Assert(fixture.Service.TryStartManual("owner", finished.Id, 21, identifier).StatusCode == 400,
+        "The handoff opened the automated manual Chrome flow.");
+    var retry = Started(fixture.Service.Retry("owner", finished.Id));
+    Assert(retry.Total == 1, "The handoff was retried despite having no automated lookup.");
+    var call = await fixture.Checker.Next();
+    Assert(call.Source.Id == 1, "Retry chose the external catalog instead of the failed provider.");
+    call.Finish(AccountStatus.Found);
+    await fixture.Finished("owner", retry.Id);
+    var single = Started(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(source, identifier) }));
+    (await fixture.Checker.Next()).Response.TrySetResult(YouControlDeclarationSource.PrepareSearch(identifier, CancellationToken.None));
+    var onlyHandoff = await fixture.Finished("owner", single.Id);
+    Assert(!onlyHandoff.CanRetry && fixture.Service.Retry("owner", single.Id).StatusCode == 400,
+        "An external search offered a meaningless automatic retry.");
 }
 
 static IReadOnlyList<SearchResultItem> Planned(SearchJobSnapshot snapshot) => snapshot.PlannedResults

@@ -130,6 +130,29 @@ try:
     # Deliberately use the incompatible mode: validation must reject before the official API can be called.
     assert api('/Parser/StartSearch',{'identifiers':['fixture_user'],'sourceIds':[int(nazk_source['data-source-id'])],'mode':'User'},csrf=csrf)[0] == 400
     print('PASS NAZK is a single full-name API source with guidance; nickname mode rejects it without an external request')
+    yc_sources = [source for source in markup.sources if source.get('data-source-name') == 'YouControl — декларації']
+    assert len(yc_sources) == 1, 'YouControl source is missing or duplicated'
+    yc = yc_sources[0]
+    assert yc['data-mode'] == 'FullName' and yc['data-manual-supported'] == 'false'
+    assert 'YouControl' in markup.hints['sourceHint_' + yc['data-source-id']]
+    yc_id = int(yc['data-source-id'])
+    assert api('/Parser/StartSearch', {'identifiers':['fixture_user'],'sourceIds':[yc_id],'mode':'User'}, csrf=csrf)[0] == 400
+    yc_name = 'Тестовий Неіснуючий Декларант'
+    status, started = api('/Parser/StartSearch', {'identifiers':[yc_name],'sourceIds':[yc_id],'mode':'FullName'}, csrf=csrf)
+    assert status == 202
+    completed_yc = finish(started['id'])
+    yc_result = completed_yc['results'][0]
+    assert completed_yc['state'] == 'completed' and not completed_yc['canRetry']
+    assert yc_result['status'] == 'unconfirmed' and yc_result.get('declarations') is None and yc_result.get('declarationTotal') is None
+    yc_url = urllib.parse.urlparse(yc_result['profileUrl'])
+    assert yc_url.netloc == 'youcontrol.com.ua' and yc_url.path == '/catalog/individuals/search/'
+    assert urllib.parse.parse_qs(yc_url.query) == {'q':[yc_name]}
+    assert api('/Parser/RetrySearch/' + started['id'], {}, csrf=csrf)[0] == 400
+    _, yc_history, _, _ = request('/Parser/MyResults')
+    yc_history_text = html.unescape(yc_history.decode())
+    assert 'Шукати декларації на YouControl' in yc_history_text and 'Автоматичне отримання даних не підключено' in yc_history_text
+    assert 'Показано 0' not in yc_history_text and 'Публічні декларації НАЗК' not in yc_history_text
+    print('PASS YouControl prepares an external full-name search with unknown inventory, correct history, and no automated retry')
     for invalid in [
         {'identifiers':['x'],'sourceIds':[],'mode':'User'},
         {'identifiers':[],'sourceIds':[1],'mode':'User'},

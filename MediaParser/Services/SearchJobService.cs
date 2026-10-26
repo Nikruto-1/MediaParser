@@ -155,9 +155,7 @@ public sealed class SearchJobService : BackgroundService
             var job = FindCore(owner, id);
             if (job == null) return new(null, "Пошук не знайдено або термін його зберігання минув.", 404);
             if (!IsTerminal(job)) return new(null, "Спочатку завершіть або зупиніть поточний пошук.", 409);
-            var retry = job.Items.Where(item => !job.Results.Any(result =>
-                result.SiteId == item.Source.Id && result.Identifier == item.Identifier &&
-                result.Outcome is AccountStatus.Found or AccountStatus.NotFound))
+            var retry = job.Items.Where(item => CanRetryItem(job, item))
                 .Select(item => new SearchWorkItem(item.Source, item.Identifier)).ToList();
             if (retry.Count == 0) return new(null, "Немає невдалих перевірок для повтору.", 400);
             return TryStart(owner, retry, job.AutomaticCaptcha);
@@ -334,6 +332,8 @@ public sealed class SearchJobService : BackgroundService
         string profileUrl = string.Empty;
         if (Declarations.NazkDeclarationSource.IsSource(item.Source))
             profileUrl = Declarations.NazkDeclarationSource.SearchUrl(item.Identifier);
+        else if (Declarations.YouControlDeclarationSource.IsSource(item.Source))
+            profileUrl = Declarations.YouControlDeclarationSource.SearchUrl(item.Identifier);
         // API endpoints may include private query parameters and must not be exposed as profile links.
         else if (!string.IsNullOrWhiteSpace(item.Source.SearchUrl))
         {
@@ -349,10 +349,14 @@ public sealed class SearchJobService : BackgroundService
 
     private static bool IsTerminal(Job job) => job.State is "completed" or "cancelled" or "failed";
 
+    private static bool CanRetryItem(Job job, SearchWorkItem item) =>
+        !Declarations.YouControlDeclarationSource.IsSource(item.Source) && !job.Results.Any(result =>
+            result.SiteId == item.Source.Id && result.Identifier == item.Identifier &&
+            result.Outcome is AccountStatus.Found or AccountStatus.NotFound);
+
     private SearchJobSnapshot Snapshot(Job job) => new(job.Id, job.State, job.Items.Count, job.Completed,
         job.CurrentSite, job.CurrentIdentifier, job.Results.ToArray(),
-        IsTerminal(job) && (job.Completed < job.Items.Count || job.Results.Any(result =>
-            result.Outcome is not (AccountStatus.Found or AccountStatus.NotFound))),
+        IsTerminal(job) && job.Items.Any(item => CanRetryItem(job, item)),
         job.Error, job.State == "cancelled", job.StartedAt,
         job.Items.Select(item => job.Results.FirstOrDefault(result => result.SiteId == item.Source.Id && result.Identifier == item.Identifier)
             ?? MakeResult(item, job.State == "running" && job.CurrentSiteId == item.Source.Id && job.CurrentIdentifier == item.Identifier
