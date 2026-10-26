@@ -23,6 +23,7 @@ jobs:
       - run: dotnet run --project tests/jobs/MediaParser.JobTests.csproj
       - run: dotnet run --project tests/captcha/MediaParser.CaptchaTests.csproj
       - run: dotnet run --project tests/declarations/MediaParser.DeclarationTests.csproj
+      - run: node --test tests/ui/declarations-ui.test.cjs
       - name: HTTP integration
         shell: bash
         run: |

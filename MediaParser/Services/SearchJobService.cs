@@ -72,7 +72,8 @@ public sealed class SearchJobService : BackgroundService
         {
             PruneExpiredCore();
             if (string.IsNullOrWhiteSpace(owner) || items.Count is < 1 or > 250 ||
-                items.Any(item => string.IsNullOrWhiteSpace(item.Identifier) || item.Identifier.Length > 100))
+                items.Any(item => !Classes.SearchIdentifierLimits.IsValid(item.Identifier,
+                    Declarations.YouControlDeclarationSource.IsSource(item.Source))))
                 return new(null, "Вкажіть від 1 до 5 ідентифікаторів і виберіть джерела.", 400);
             if (!_accepting)
                 return new(null, "Сервер зупиняється. Спробуйте пізніше.", 503);
@@ -173,7 +174,7 @@ public sealed class SearchJobService : BackgroundService
             var result = original.Results.FirstOrDefault(value => value.SiteId == siteId && value.Identifier == identifier);
             if (item == null || result == null || result.Outcome is AccountStatus.Found or AccountStatus.NotFound)
                 return new(null, "Оберіть непідтверджений результат, обмеження доступу або помилку для ручної перевірки.", 400);
-            if (item.Source.LinkType == "FullName")
+            if (item.Source.LinkType == "FullName" && !Declarations.YouControlDeclarationSource.IsSource(item.Source))
                 return new(null, "Список результатів за ПІБ перевірте вручну за посиланням на джерело.", 400);
             if (string.IsNullOrWhiteSpace(item.Source.SearchUrl))
                 return new(null, "У джерела немає публічної адреси профілю для відкриття у Chrome.", 400);
@@ -333,7 +334,8 @@ public sealed class SearchJobService : BackgroundService
         if (Declarations.NazkDeclarationSource.IsSource(item.Source))
             profileUrl = Declarations.NazkDeclarationSource.SearchUrl(item.Identifier);
         else if (Declarations.YouControlDeclarationSource.IsSource(item.Source))
-            profileUrl = Declarations.YouControlDeclarationSource.SearchUrl(item.Identifier);
+            profileUrl = Declarations.YouControlCatalogParser.TryPersonUrl(item.Identifier, out var personUrl)
+                ? personUrl : Declarations.YouControlDeclarationSource.SearchUrl(item.Identifier);
         // API endpoints may include private query parameters and must not be exposed as profile links.
         else if (!string.IsNullOrWhiteSpace(item.Source.SearchUrl))
         {
@@ -350,7 +352,7 @@ public sealed class SearchJobService : BackgroundService
     private static bool IsTerminal(Job job) => job.State is "completed" or "cancelled" or "failed";
 
     private static bool CanRetryItem(Job job, SearchWorkItem item) =>
-        !Declarations.YouControlDeclarationSource.IsSource(item.Source) && !job.Results.Any(result =>
+        !job.Results.Any(result =>
             result.SiteId == item.Source.Id && result.Identifier == item.Identifier &&
             result.Outcome is AccountStatus.Found or AccountStatus.NotFound);
 

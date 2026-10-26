@@ -2,6 +2,7 @@ using MediaParser.Classes;
 using MediaParser.Models;
 using MediaParser.Repositories;
 using MediaParser.Services;
+using MediaParser.Services.Declarations;
 using Microsoft.AspNetCore.Mvc;
 
 namespace MediaParser.Controllers;
@@ -37,6 +38,44 @@ public class ParserController : Controller
             .LastOrDefault(job => job.State is "queued" or "running")?.Id;
         SetCaptchaViewData();
         return View(new SearchIdentifiers());
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    [RequestSizeLimit(YouControlPageImport.MaxBytes + 16384)]
+    [RequestFormLimits(MultipartBodyLengthLimit = YouControlPageImport.MaxBytes + 16384)]
+    public async Task<IActionResult> ImportYouControl(string? sourceUrl, IFormFile? page)
+    {
+        try
+        {
+            if (!ModelState.IsValid || page == null || page.Length is < 1 or > YouControlPageImport.MaxBytes ||
+                Path.GetExtension(page.FileName).ToLowerInvariant() is not (".html" or ".htm"))
+                throw new InvalidDataException("Оберіть збережену сторінку .html або .htm розміром до 2 MiB.");
+            await _mediaService.UpdateMedia();
+            var source = _mediaService.GetMediaSources().Select(item => item.Media).FirstOrDefault(YouControlDeclarationSource.IsSource)
+                ?? throw new InvalidDataException("Додайте джерело YouControl перед імпортом.");
+            sourceUrl = sourceUrl?.Trim() ?? string.Empty;
+            await using var stream = page.OpenReadStream();
+            var parsed = await YouControlPageImport.ReadAsync(stream, sourceUrl, HttpContext.RequestAborted);
+            var importedAt = DateTimeOffset.UtcNow;
+            var name = parsed.Declarations[0].FullName;
+            const string reason = "Імпортовано публічні службові метадані зі збереженої сторінки. Походження та актуальність не перевірено наживо; дані можуть стосуватися тезки.";
+            var detail = new SearchResultItem(source.Id, source.Name, name, sourceUrl, AccountStatus.Unconfirmed,
+                "Імпортовані дані", reason,
+                $"Імпорт: {importedAt:yyyy-MM-dd HH:mm:ss} UTC. HTML-файл і його назва не зберігаються. Прочитано поточну сторінку, до 20 документів.",
+                null, parsed.Declarations, parsed.Total);
+            _resultsRepository.AddResult(new ResultsModel
+            {
+                Nickname = name, Date = importedAt.UtcDateTime,
+                Details = [detail], Results = new() { [source.Name] = ($"Імпортовані дані: {reason}", sourceUrl) }
+            });
+            return RedirectToAction(nameof(MyResults));
+        }
+        catch (InvalidDataException error)
+        {
+            TempData["ImportError"] = error.Message;
+            return RedirectToAction(nameof(SearchByMedia));
+        }
     }
 
     [HttpPost]
@@ -88,7 +127,7 @@ public class ParserController : Controller
         var owner = HttpContext.Session.GetString(OwnerKey);
         var original = owner == null ? null : _jobs.Get(owner, id);
         if (original == null) return MissingJob();
-        if (!ModelState.IsValid || request == null || string.IsNullOrWhiteSpace(request.Identifier) || request.Identifier.Length > 100)
+        if (!ModelState.IsValid || request == null || !SearchIdentifierLimits.IsValid(request.Identifier))
             return BadRequest(new { error = "Оберіть результат для ручної перевірки." });
         _resultsRepository.SaveJob(original);
         return StartResponse(_jobs.TryStartManual(owner!, id, request.SiteId, request.Identifier));
@@ -164,8 +203,8 @@ public class ParserController : Controller
         if (request.Mode is not ("User" or "FullName"))
             return Invalid("Оберіть режим «Нікнейм» або «Ім’я та прізвище».");
         if (request.Identifiers == null || request.Identifiers.Count is < 1 or > 5 ||
-            request.Identifiers.Any(value => string.IsNullOrWhiteSpace(value) || value.Trim().Length > 100))
-            return Invalid("Вкажіть від 1 до 5 непорожніх ідентифікаторів, до 100 символів кожен.");
+            request.Identifiers.Any(value => !SearchIdentifierLimits.IsValid(value?.Trim())))
+            return Invalid("Вкажіть від 1 до 5 непорожніх ідентифікаторів: ПІБ або нікнейм до 100 символів, HTTPS-URL картки YouControl до 512.");
         var identifiers = request.Identifiers.Select(value => value.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (request.Mode == "User" && identifiers.Any(value => value.Any(char.IsWhiteSpace)))
             return Invalid("Нікнейм не може містити пробілів. Для імені та прізвища змініть режим пошуку.");
@@ -179,6 +218,9 @@ public class ParserController : Controller
             return Invalid("Частину джерел видалено або змінено. Оновіть список і спробуйте ще раз.");
         if (sources.Any(source => source.LinkType != request.Mode))
             return Invalid("Обрані джерела не відповідають режиму пошуку. Перевірте вибір.");
+        if (identifiers.Any(identifier => MediaParser.Services.Declarations.YouControlCatalogParser.TryPersonUrl(identifier, out _)) &&
+            sources.Any(source => !MediaParser.Services.Declarations.YouControlDeclarationSource.IsSource(source)))
+            return Invalid("Для читання URL картки персони оберіть лише YouControl. Для інших джерел введіть ПІБ.");
 
         var owner = HttpContext.Session.GetString(OwnerKey);
         if (owner == null)

@@ -23,7 +23,7 @@ public static class SourceCapabilities
         string host = uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host;
         return host.ToLowerInvariant() switch
         {
-            "youcontrol.com.ua" => "YouControl: відкриття пошуку декларацій за ПІБ у каталозі. Автоматичне отримання через ліцензійний API не підключено; результати перегляньте на YouControl.",
+            "youcontrol.com.ua" => "YouControl: читаємо публічні службові метадані та список декларацій через Chrome. Введіть ПІБ або URL картки персони; перевірка безпеки може потребувати ручного підтвердження у Chrome.",
             "public.nazk.gov.ua" => "НАЗК: пошук декларацій за ПІБ через офіційний публічний API. Збіг ПІБ не підтверджує особу; частина декларацій може бути закритою.",
             "epicgames.com" => "Epic Games: адреса /id/ не підтверджує публічний профіль за display name. Потрібна ручна перевірка через Epic Games або офіційний авторизований API.",
             "open.spotify.com" => "Spotify: введіть точний username/ID із посилання /user/…, а не відображуване ім’я профілю.",

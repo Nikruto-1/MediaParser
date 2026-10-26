@@ -24,32 +24,39 @@
             return ["https:", "http:"].includes(url.protocol) ? url.href : null;
         } catch { return null; }
     };
-    const officialRegistryUrl = value => {
+    const declarationProviders = [
+        { key: "nazk", origin: "https://public.nazk.gov.ua", searchPath: "/documents/list", title: "Публічні декларації НАЗК", documentLabel: "Відкрити декларацію НАЗК", searchLabel: "Усі результати в офіційному реєстрі", note: "Джерело: офіційний публічний реєстр НАЗК.", documentPath: id => `/documents/${id}` },
+        { key: "youcontrol", origin: "https://youcontrol.com.ua", searchPath: "/catalog/individuals/search/", title: "Декларації YouControl", documentLabel: "Відкрити на YouControl", searchLabel: "Шукати декларації на YouControl", note: "Метадані надані YouControl — окремим сервісом, а не офіційним реєстром НАЗК.", documentPath: id => `/catalog/individuals/declaration/${id}/` }
+    ];
+    const declarationProvider = value => {
         try {
             const url = new URL(value);
-            return url.origin === "https://public.nazk.gov.ua" && !url.username && !url.password ? url.href : null;
+            if (url.username || url.password || url.hash) return null;
+            return declarationProviders.find(provider => url.origin === provider.origin && (url.pathname === provider.searchPath
+                || provider.key === "youcontrol" && !url.search && /^\/catalog\/individuals\/[a-z0-9]+(?:-[a-z0-9]+)+\/$/.test(url.pathname))) || null;
         } catch { return null; }
     };
-    const youControlSearchUrl = value => {
+    const declarationDocumentUrl = (value, id, provider) => {
+        if (!provider || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id || ""))) return null;
         try {
             const url = new URL(value);
-            return url.origin === "https://youcontrol.com.ua" && !url.username && !url.password && !url.hash
-                && url.pathname === "/catalog/individuals/search/" ? url.href : null;
+            return url.origin === provider.origin && !url.username && !url.password && !url.search && !url.hash
+                && url.pathname.toLowerCase() === provider.documentPath(String(id).toLowerCase()) ? url.href : null;
         } catch { return null; }
     };
-    const officialDeclarationUrl = (value, id) => {
-        const official = officialRegistryUrl(value);
-        if (!official || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id || ""))) return null;
-        const url = new URL(official);
-        return !url.search && !url.hash && url.pathname.toLowerCase() === `/documents/${String(id).toLowerCase()}` ? url.href : null;
-    };
-    const isDeclarationResult = result => Array.isArray(result.declarations)
-        || Number.isInteger(result.declarationTotal) || !!officialRegistryUrl(result.profileUrl);
     const formatDate = value => {
         const date = new Date(value);
         return value && !Number.isNaN(date.getTime()) ? date.toLocaleString("uk-UA", {
             day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit"
         }) : "Час не вказано";
+    };
+    const formatDateOnly = value => {
+        if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+        const [year, month, day] = value.split("-").map(Number);
+        const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+        const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        return year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1]
+            ? `${value.slice(8, 10)}.${value.slice(5, 7)}.${value.slice(0, 4)}` : null;
     };
     const element = (tag, className, text) => {
         const node = document.createElement(tag);
@@ -70,28 +77,38 @@
         });
     }
 
-    function createDeclarationSection(result) {
+    function createDeclarationSection(result, provider) {
         const hasInventory = Array.isArray(result.declarations) || Number.isInteger(result.declarationTotal);
         const declarations = Array.isArray(result.declarations) ? result.declarations.filter(item => item && typeof item === "object").slice(0, 20) : [];
         const total = Number.isInteger(result.declarationTotal) && result.declarationTotal >= declarations.length ? result.declarationTotal : null;
         const section = element("section", "declaration-results");
-        section.setAttribute("aria-label", "Публічні декларації НАЗК");
+        section.dataset.provider = provider.key;
+        section.setAttribute("aria-label", provider.title);
         const heading = element("div", "declaration-heading");
-        heading.append(element("h4", "", "Публічні декларації НАЗК"));
-        if (hasInventory) heading.append(element("span", "declaration-count",
-            total !== null ? `Показано ${declarations.length} із ${total}` : `Показано ${declarations.length} документів`));
-        section.append(heading, element("p", "identity-notice", "Збіг ПІБ не підтверджує особу. Відсутність декларацій не доводить, що людина не працює або не працювала в державних органах."));
+        heading.append(element("h4", "", provider.title));
+        if (hasInventory) heading.append(element("span", "declaration-count", total !== null ? `Показано ${declarations.length} із ${total}` : `Документів у списку: ${declarations.length}`));
+        section.append(heading, element("p", "declaration-provider-note", provider.note), element("p", "identity-notice", "Збіг ПІБ не підтверджує особу. Відсутність декларацій не доводить, що людина не працює або не працювала в державних органах."));
         if (declarations.length) {
+            const first = declarations[0];
+            const overview = element("section", "person-overview");
+            overview.setAttribute("aria-label", "Короткі відомості з першого документа");
+            const overviewFields = element("dl", "declaration-meta");
+            for (const [label, value] of [["ПІБ", first.fullName], ["Посада", first.position], ["Місце роботи", first.workplace]]) {
+                if (value !== null && value !== undefined && String(value).trim()) overviewFields.append(element("dt", "", label), element("dd", "", String(value)));
+            }
+            if (overviewFields.children.length) {
+                overview.append(element("h5", "", "Короткі відомості"), element("p", "field-hint", "З першого знайденого документа. Дані можуть стосуватися тезки й не підтверджують поточну зайнятість."), overviewFields);
+                section.append(overview);
+            }
             const list = element("ul", "declaration-list");
             list.tabIndex = 0;
-            list.setAttribute("aria-label", "Знайдені публічні декларації");
+            list.setAttribute("aria-label", `Документи: ${provider.title}`);
             declarations.forEach(declaration => {
                 const item = element("li", "declaration-item");
                 item.append(element("h5", "declaration-name", declaration.fullName || "ПІБ не вказано в результаті"));
                 const metadata = element("dl", "declaration-meta");
                 const field = (label, value) => {
-                    if (value !== null && value !== undefined && String(value).trim())
-                        metadata.append(element("dt", "", label), element("dd", "", String(value)));
+                    if (value !== null && value !== undefined && String(value).trim()) metadata.append(element("dt", "", label), element("dd", "", String(value)));
                 };
                 field("Рік декларації", declaration.declarationYear);
                 field("Тип декларації", declaration.declarationType);
@@ -99,47 +116,28 @@
                 field("Посада", declaration.position);
                 field("Місце роботи", declaration.workplace);
                 if (declaration.submittedAt) field("Подано", formatDate(declaration.submittedAt));
+                else field("Подано", formatDateOnly(declaration.submittedDate));
                 if (metadata.children.length) item.append(metadata);
-                const url = officialDeclarationUrl(declaration.url, declaration.id);
+                const url = declarationDocumentUrl(declaration.url, declaration.id, provider);
                 if (url) {
-                    const link = element("a", "declaration-link", "Відкрити декларацію НАЗК ↗");
-                    link.href = url;
-                    link.target = "_blank";
-                    link.rel = "noopener noreferrer";
+                    const link = element("a", "declaration-link", `${provider.documentLabel} ↗`);
+                    link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer";
                     item.append(link);
                 }
                 list.append(item);
             });
             section.append(list);
-            if ((total !== null && total > declarations.length) || declarations.length === 20)
-                section.append(element("p", "declaration-limit", "Показано першу сторінку документів. Повний список перевірте в офіційному реєстрі."));
+            if ((total !== null && total > declarations.length) || declarations.length === 20) section.append(element("p", "declaration-limit", "Показано до 20 отриманих документів. Повний список перевірте в джерелі."));
         } else if (hasInventory) {
-            section.append(element("p", "declaration-empty", "Документів для показу немає. Перегляньте причину результату та уточніть ПІБ в офіційному реєстрі."));
+            section.append(element("p", "declaration-empty", "Документів для показу немає. Уточніть ПІБ або перевірте пошук на сайті джерела."));
+        } else {
+            section.append(element("p", "declaration-unavailable", "Дані джерела не отримано. Причину вказано вище; пошук можна відкрити окремо."));
         }
-        const registry = officialRegistryUrl(result.profileUrl);
-        if (registry) {
-            const link = element("a", "declaration-link declaration-all", "Усі результати в офіційному реєстрі ↗");
-            link.href = registry;
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-            section.append(link);
-        }
-        return section;
-    }
-
-    function createYouControlSection(result) {
-        const section = element("section", "declaration-results");
-        section.setAttribute("aria-label", "Пошук декларацій на YouControl");
-        section.append(element("h4", "", "Пошук декларацій на YouControl"),
-            element("p", "field-hint", "Автоматичне отримання даних не підключено. Результати перегляньте в каталозі YouControl; збіг ПІБ не підтверджує особу."));
-        const url = youControlSearchUrl(result.profileUrl);
-        if (url) {
-            const link = element("a", "declaration-link declaration-all", "Шукати декларації на YouControl ↗");
-            link.href = url;
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
-            section.append(link);
-        }
+        const sourceLabel = provider.key === "youcontrol" && new URL(result.profileUrl).pathname !== provider.searchPath
+            ? "Відкрити картку на YouControl" : provider.searchLabel;
+        const link = element("a", "declaration-link declaration-all", `${sourceLabel} ↗`);
+        link.href = result.profileUrl; link.target = "_blank"; link.rel = "noopener noreferrer";
+        section.append(link);
         return section;
     }
 
@@ -156,18 +154,17 @@
         heading.append(identity, element("span", `status-pill status-${status}`, result.label || statuses[status].label));
         card.append(heading);
         if (result.reason) card.append(element("p", "result-reason", result.reason));
-        const youControlResult = !!youControlSearchUrl(result.profileUrl);
-        const registryResult = !youControlResult && isDeclarationResult(result);
-        const url = youControlResult ? youControlSearchUrl(result.profileUrl) : registryResult ? officialRegistryUrl(result.profileUrl) : safeUrl(result.profileUrl);
-        if (url && !registryResult && !youControlResult) {
+        const provider = declarationProvider(result.profileUrl);
+        const url = safeUrl(result.profileUrl);
+        if (url && !provider) {
             const link = element("a", "result-url", `${url} ↗`);
             link.href = url;
             link.target = "_blank";
             link.rel = "noopener noreferrer";
-            link.setAttribute("aria-label", `${registryResult ? "Відкрити офіційний реєстр НАЗК" : status === "found" ? "Відкрити профіль" : "Відкрити сторінку перевірки"}: ${result.site}, ${result.identifier}`);
+            link.setAttribute("aria-label", `${status === "found" ? "Відкрити профіль" : "Відкрити сторінку перевірки"}: ${result.site}, ${result.identifier}`);
             card.append(link);
         }
-        if (manualCheck && url && !youControlResult && ["blocked", "unconfirmed", "error", "cancelled"].includes(status)) {
+        if (manualCheck && url && ["blocked", "unconfirmed", "error", "cancelled"].includes(status)) {
             const actions = element("div", "result-manual-actions");
             const button = element("button", "btn btn-outline-secondary btn-sm manual-check-button", "Перевірити у Chrome вручну");
             button.type = "button";
@@ -175,8 +172,7 @@
             actions.append(button);
             card.append(actions);
         }
-        if (registryResult && !["pending", "checking"].includes(status)) card.append(createDeclarationSection(result));
-        if (youControlResult && !["pending", "checking"].includes(status)) card.append(createYouControlSection(result));
+        if (provider && !["pending", "checking"].includes(status)) card.append(createDeclarationSection(result, provider));
         const details = element("details", "result-details");
         details.append(element("summary", "", "Деталі перевірки"));
         const list = element("dl");
@@ -184,7 +180,7 @@
         detail("Статус", result.label || statuses[status].label);
         if (result.reason) detail("Причина", result.reason);
         detail("Ознаки", result.evidence || "Додаткових ознак немає.");
-        detail(youControlResult ? "Посилання підготовлено" : "Перевірено", result.checkedAt ? formatDate(result.checkedAt) : status === "checking" ? "Перевірка триває." : "Ще не перевірено.");
+        detail(provider ? "Час запиту" : "Перевірено", result.checkedAt ? formatDate(result.checkedAt) : status === "checking" ? "Перевірка триває." : "Ще не перевірено.");
         details.append(list);
         card.append(details);
         return card;
@@ -308,7 +304,19 @@
         }
         function validateIdentifiers() {
             fields.querySelectorAll("input").forEach(input => {
-                input.setCustomValidity(mode === "User" && /\s/.test(input.value.trim())
+                const value = input.value.trim();
+                let isYouControlPersonUrl = false;
+                if (mode === "FullName") {
+                    try {
+                        const url = new URL(value);
+                        isYouControlPersonUrl = url.origin === "https://youcontrol.com.ua" && !url.username && !url.password
+                            && !url.search && !url.hash && /^\/catalog\/individuals\/[a-z0-9]+(?:-[a-z0-9]+)+\/$/.test(url.pathname);
+                    } catch { }
+                }
+                input.maxLength = mode === "FullName" ? 512 : 100;
+                input.setCustomValidity(value.length > (isYouControlPersonUrl ? 512 : 100)
+                    ? "ПІБ або нікнейм має містити до 100 символів, HTTPS-URL картки YouControl — до 512."
+                    : mode === "User" && /\s/.test(value)
                     ? "Нікнейм не може містити пробіли. Для імені та прізвища оберіть відповідний режим."
                     : "");
             });
@@ -339,8 +347,11 @@
             byId("sourceModeHint").textContent = mode === "User"
                 ? "Джерела пошуку за ПІБ вимкнені для цього режиму."
                 : "Джерела профілів за нікнеймом вимкнені для цього режиму.";
+            byId("identifierHint").textContent = mode === "User"
+                ? "До 5 ідентифікаторів за один пошук. Дублікати перевіряються один раз."
+                : "ПІБ — до 100 символів; HTTPS-URL картки YouControl — до 512. Для URL оберіть лише YouControl. До 5 ідентифікаторів за пошук.";
             fields.querySelectorAll("input").forEach(input => {
-                input.placeholder = mode === "User" ? "Наприклад, nickname" : "Прізвище Ім’я По батькові";
+                input.placeholder = mode === "User" ? "Наприклад, nickname" : "ПІБ або URL картки YouControl";
             });
             validateIdentifiers();
             updateSelection();
@@ -480,8 +491,7 @@
                 const key = `${result.siteId}:${result.identifier}`;
                 desiredKeys.add(key);
                 const metadata = sourceMetadata.get(Number(result.siteId));
-                const canCheckManually = snapshot && terminalStates.has(snapshot.state) && metadata?.dataset.mode === "User"
-                    && metadata.dataset.manualSupported !== "false";
+                const canCheckManually = snapshot && terminalStates.has(snapshot.state) && metadata?.dataset.manualSupported === "true";
                 const signature = `${JSON.stringify(result)}:${canCheckManually}`;
                 let cached = resultCards.get(key);
                 if (!cached || cached.signature !== signature) {

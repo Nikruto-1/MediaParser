@@ -10,11 +10,13 @@ public sealed class AccountChecker : IAccountChecker
 {
     private readonly ICaptchaAutomation? _captcha;
     private readonly INazkDeclarationSearch? _declarations;
+    private readonly IYouControlDeclarationSearch? _youControl;
 
-    public AccountChecker(ICaptchaAutomation? captcha = null, INazkDeclarationSearch? declarations = null)
+    public AccountChecker(ICaptchaAutomation? captcha = null, INazkDeclarationSearch? declarations = null, IYouControlDeclarationSearch? youControl = null)
     {
         _captcha = captcha;
         _declarations = declarations;
+        _youControl = youControl;
     }
 
     public Task<AccountCheckResult> CheckWithCaptchaAsync(MediaSource source, string identifier, CaptchaSolveBudget budget,
@@ -39,7 +41,8 @@ public sealed class AccountChecker : IAccountChecker
         CaptchaSolveBudget? captchaBudget = null, Action<string>? onProgress = null)
     {
         if (YouControlDeclarationSource.IsSource(source))
-            return YouControlDeclarationSource.PrepareSearch(identifier, cancellationToken);
+            return _youControl is null ? new(AccountStatus.Unconfirmed, "Читання каталогу YouControl не налаштовано.")
+                : await _youControl.SearchAsync(identifier, cancellationToken, interactive);
         if (NazkDeclarationSource.IsSource(source))
             return _declarations is null
                 ? new(AccountStatus.Unconfirmed, "Пошук декларацій НАЗК зараз недоступний.")

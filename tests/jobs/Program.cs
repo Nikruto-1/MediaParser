@@ -11,10 +11,11 @@ using MediaParser.IRepositories;
 using MediaParser.Repositories;
 using MediaParser.Services;
 using MediaParser.Services.DBServices;
-using MediaParser.Services.Captcha;
 using MediaParser.Services.Declarations;
+using MediaParser.Services.Captcha;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ViewFeatures;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -31,14 +32,17 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Admission rejects empty or oversized requests and deduplicates identical work", AdmissionValidation),
     ("Checker exceptions become retryable sanitized results", CheckerExceptionIsSanitized),
     ("Controller validates mode and source membership and protects every job endpoint", ControllerValidationAndOwnership),
+    ("Long absolute YouControl person URLs pass admission and manual checks without extending plain-name limits", YouControlIdentifierLengthLimits),
+    ("YouControl HTML import saves only unverified public metadata and rejects unsafe or blocked pages", YouControlControllerImport),
     ("Every planned source appears immediately without counting pending or checking rows", PlannedRowsAndProgress),
     ("Manual checks validate ownership and target status and preserve every other result", ManualValidationAndPreservation),
     ("Cancelling a manual check preserves retained rows and holds the occupied worker slot", ManualCancellationAndSlots),
     ("Manual checking targets one source and identifier pair without changing its other identifiers", ManualTargetPairIsolation),
     ("Ordinary retry of an unresolved manual result uses only the non-interactive checker", OrdinaryRetryIsNotInteractive),
     ("Declaration metadata survives progress and history and is retained when other sources are retried or checked manually", DeclarationMetadataRoundtrip),
-    ("Excel exports rich declarations on a linked worksheet and preserves the five legacy result columns", DeclarationExcelExport),
-    ("YouControl handoff keeps its public URL in history and export and is not retried as an automated lookup", YouControlSearchRoundtrip)
+    ("Synthetic YouControl declaration metadata survives progress, history, retained checks, and Excel", YouControlMetadataRoundtrip),
+    ("Unresolved YouControl declarations support retry and owned manual reading while retaining other results", YouControlUnresolvedRetry),
+    ("Excel exports rich declarations on a linked worksheet and preserves the five legacy result columns", DeclarationExcelExport)
 };
 var failures = 0;
 foreach (var test in tests)
@@ -369,6 +373,8 @@ static async Task ControllerValidationAndOwnership()
         "Manual checking accepted a source outside the owned job.");
     Assert(controller.ManualCheck(Guid.NewGuid(), new ManualCheckRequest { SiteId = 2, Identifier = "Alice Bob" }) is NotFoundObjectResult,
         "Manual checking did not reject an unknown job.");
+    Assert(controller.ManualCheck(job.Id, new ManualCheckRequest { SiteId = 2, Identifier = "Alice Bob" }) is ObjectResult { StatusCode: 400 },
+        "A generic full-name source was admitted to interactive Chrome outside the explicitly supported provider.");
 
     var (stranger, _) = CreateController(fixture.Service, user, fullName);
     Assert(stranger.SearchProgress(job.Id) is NotFoundObjectResult, "Progress exposed another session's job.");
@@ -377,6 +383,141 @@ static async Task ControllerValidationAndOwnership()
     Assert(stranger.ExportJob(job.Id) is NotFoundObjectResult, "Export exposed another session's results.");
     Assert(stranger.ManualCheck(job.Id, new ManualCheckRequest { SiteId = 2, Identifier = "Alice Bob" }) is NotFoundObjectResult,
         "Manual checking exposed another session's job.");
+}
+
+static async Task YouControlIdentifierLengthLimits()
+{
+    await using var fixture = await Fixture.Create();
+    var source = new MediaSource
+    {
+        Id = 21, Name = YouControlDeclarationSource.Name, LinkType = "FullName",
+        SearchUrl = YouControlDeclarationSource.SearchTemplate, ErrorKeywordsRaw = "[]"
+    };
+    var other = Work(22)[0].Source;
+    other.LinkType = "FullName";
+    var nickname = Work(23)[0].Source;
+    const string prefix = "https://youcontrol.com.ua/catalog/individuals/";
+    var url = prefix + new string('a', 512 - prefix.Length - 3) + "-b/";
+    var oversizedUrl = prefix + new string('a', 513 - prefix.Length - 3) + "-b/";
+    var plainName = new string('а', 98) + " Іван";
+    var relativeUrl = "/catalog/individuals/" + new string('a', 110) + "-b/";
+    var invalidUrl = url.Replace("youcontrol.com.ua", "attacker.example", StringComparison.Ordinal);
+    Assert(url.Length == 512 && oversizedUrl.Length == 513 && plainName.Length > 100,
+        "The length-boundary fixtures are invalid.");
+    foreach (var invalid in new[] { plainName, oversizedUrl, relativeUrl, invalidUrl })
+        Assert(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(source, invalid) }).StatusCode == 400,
+            "Job admission extended the URL allowance to an oversized, relative, external, or plain-name identifier.");
+    Assert(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(other, url) }).StatusCode == 400 &&
+        fixture.Service.TryStart("owner", new[] { new SearchWorkItem(nickname, url) }).StatusCode == 400,
+        "The long YouControl URL allowance leaked to another source or nickname mode.");
+
+    var (controller, session) = CreateController(fixture.Service, source, other, nickname);
+    foreach (var invalid in new[] { plainName, oversizedUrl, relativeUrl, invalidUrl })
+        Assert(await controller.StartSearch(new SearchRequest { Mode = "FullName", Identifiers = new() { invalid }, SourceIds = new() { 21 } })
+            is ObjectResult { StatusCode: 400 }, "The controller admitted an invalid long identifier.");
+    Assert(await controller.StartSearch(new SearchRequest { Mode = "FullName", Identifiers = new() { url }, SourceIds = new() { 21, 22 } })
+        is ObjectResult { StatusCode: 400 }, "A direct person URL was sent to unrelated full-name sources.");
+    Assert(await controller.StartSearch(new SearchRequest { Mode = "User", Identifiers = new() { url }, SourceIds = new() { 23 } })
+        is ObjectResult { StatusCode: 400 }, "Nickname mode accepted a long person URL.");
+    Assert(fixture.Checker.CallCount == 0, "Invalid long identifiers reached a checker.");
+
+    var admitted = await controller.StartSearch(new SearchRequest
+        { Mode = "FullName", Identifiers = new() { url }, SourceIds = new() { 21 } });
+    Assert(admitted is ObjectResult { StatusCode: 202, Value: SearchJobSnapshot }, "A validated 512-character person URL was rejected.");
+    var job = (SearchJobSnapshot)((ObjectResult)admitted).Value!;
+    var invocation = await fixture.Checker.Next();
+    Assert(invocation.Identifier == url && Planned(job).Single().ProfileUrl == url,
+        "A long direct URL was truncated or encoded as a name search.");
+    invocation.Finish(AccountStatus.Blocked);
+    await fixture.Finished(session.GetString("SearchOwner")!, job.Id);
+    foreach (var invalid in new[] { plainName, oversizedUrl })
+        Assert(controller.ManualCheck(job.Id, new ManualCheckRequest { SiteId = 21, Identifier = invalid }) is ObjectResult { StatusCode: 400 },
+            "Manual admission accepted an invalid long identifier.");
+    var manual = controller.ManualCheck(job.Id, new ManualCheckRequest { SiteId = 21, Identifier = url });
+    Assert(manual is ObjectResult { StatusCode: 202, Value: SearchJobSnapshot }, "Manual checking rejected the owned long URL.");
+    var manualJob = (SearchJobSnapshot)((ObjectResult)manual).Value!;
+    var interactive = await fixture.Checker.Next();
+    Assert(interactive.IsInteractive && interactive.Identifier == url, "Manual checking lost the complete direct URL.");
+    interactive.Finish(AccountStatus.Unconfirmed);
+    await fixture.Finished(session.GetString("SearchOwner")!, manualJob.Id);
+}
+
+static async Task YouControlControllerImport()
+{
+    await using var fixture = await Fixture.Create();
+    const string personUrl = "https://youcontrol.com.ua/catalog/individuals/testovyy-korystuvach-petrovych/";
+    const string name = "Тестовий Користувач Петрович";
+    const string privateSentinel = "PRIVATE-IMPORT-SENTINEL-736120";
+    const string privateFileName = "PRIVATE-UPLOADED-FILENAME-927345.html";
+    const string sourceKey = "TEST-ONLY-unused-import-source-key-847120";
+    var source = new MediaSource
+    {
+        Id = 21, Name = YouControlDeclarationSource.Name, LinkType = "FullName",
+        SearchUrl = YouControlDeclarationSource.SearchTemplate, ApiKey = sourceKey, ErrorKeywordsRaw = "[]"
+    };
+    var html = $$"""
+        <html><title>Публічна картка</title><section>{{privateSentinel}}</section>
+        <h2>Суб'єкти декларування — {{name}}<div class="label label-info">1</div></h2>
+        <table class="table-yc table-declaration-subj">
+        <tr><td>Тип декларації</td><td>Подана</td><td>Місце роботи/посада</td><td>Місто, селище чи село</td><td></td></tr>
+        <tr><td><div class="td-title">Тип декларації</div>Річна</td><td><div class="td-title">Подана</div>24.03.2026</td>
+        <td><div class="td-title">Місце роботи/посада</div>Тестова установа / Головний спеціаліст</td>
+        <td>{{privateSentinel}}</td><td><a href="/catalog/individuals/declaration/11111111-1111-4111-8111-111111111111/">ДЕТАЛЬНІШЕ</a></td></tr>
+        </table></html>
+        """;
+    var bytes = System.Text.Encoding.UTF8.GetBytes(html);
+    var (controller, session) = CreateController(fixture.Service, source);
+    controller.TempData = new TempDataDictionary(controller.HttpContext, new MemoryTempDataProvider());
+    using (var stream = new MemoryStream(bytes))
+    {
+        var upload = new FormFile(stream, 0, bytes.Length, "page", privateFileName)
+            { Headers = new HeaderDictionary(), ContentType = "text/html" };
+        Assert(await controller.ImportYouControl(personUrl, upload) is RedirectToActionResult { ActionName: nameof(ParserController.MyResults) },
+            "A valid public-card import did not redirect to saved results.");
+    }
+    var repository = new ResultsRepository(new HttpContextAccessor { HttpContext = controller.HttpContext });
+    var saved = repository.GetListResults().Single();
+    var detail = saved.Details.Single();
+    Assert(saved.Nickname == name && saved.JobId == null && detail.Identifier == name && detail.SiteId == 21 &&
+        detail.ProfileUrl == personUrl && detail.Outcome == AccountStatus.Unconfirmed && detail.CheckedAt == null &&
+        detail.Label == "Імпортовані дані" && detail.Reason.Contains("не перевірено наживо", StringComparison.Ordinal) &&
+        detail.Evidence!.Contains("Імпорт:", StringComparison.Ordinal) && detail.DeclarationTotal == 1,
+        "Import lost its provenance or was presented as a live verified result.");
+    var declaration = detail.Declarations!.Single();
+    Assert(declaration.FullName == name && declaration.Workplace == "Тестова установа" && declaration.Position == "Головний спеціаліст" &&
+        declaration.SubmittedDate == "2026-03-24" && declaration.SubmittedAt == null && declaration.DeclarationYear == null &&
+        declaration.Url == "https://youcontrol.com.ua/catalog/individuals/declaration/11111111-1111-4111-8111-111111111111/",
+        "The controller did not preserve the typed public metadata and date-only precision.");
+    var latest = repository.GetListLustResults().Single().Details.Single();
+    Assert(latest.Outcome == detail.Outcome && latest.CheckedAt == null && latest.Evidence == detail.Evidence &&
+        latest.Declarations!.SequenceEqual(detail.Declarations!),
+        "The import was absent from the latest-results history.");
+    foreach (var key in new[] { "UserResults", "LastResults" })
+    {
+        var stored = session.GetString(key)!;
+        Assert(!stored.Contains(privateSentinel, StringComparison.Ordinal) && !stored.Contains(privateFileName, StringComparison.Ordinal) &&
+            !stored.Contains(sourceKey, StringComparison.Ordinal) && !stored.Contains("<table", StringComparison.OrdinalIgnoreCase) &&
+            !stored.Contains("<h2", StringComparison.OrdinalIgnoreCase), "Import history stored full HTML, private fields, a filename, or source credentials.");
+    }
+    foreach (var rejected in new[]
+    {
+        (Url: "https://attacker.test/catalog/individuals/testovyy-korystuvach-petrovych/", Html: html),
+        (Url: personUrl + "?token=private", Html: html),
+        (Url: personUrl, Html: "<title>Just a moment...</title><form id='challenge-form'></form>")
+    })
+    {
+        var (invalid, invalidSession) = CreateController(fixture.Service, source);
+        invalid.TempData = new TempDataDictionary(invalid.HttpContext, new MemoryTempDataProvider());
+        var rejectedBytes = System.Text.Encoding.UTF8.GetBytes(rejected.Html);
+        using var stream = new MemoryStream(rejectedBytes);
+        var upload = new FormFile(stream, 0, rejectedBytes.Length, "page", "card.html")
+            { Headers = new HeaderDictionary(), ContentType = "text/html" };
+        Assert(await invalid.ImportYouControl(rejected.Url, upload) is RedirectToActionResult { ActionName: nameof(ParserController.SearchByMedia) } &&
+            invalid.TempData["ImportError"] is string { Length: > 0 }, "An unsafe or blocked import did not return a user-facing import error.");
+        Assert(invalidSession.GetString("UserResults") == null && invalidSession.GetString("LastResults") == null,
+            "A rejected import created result history.");
+    }
+    Assert(fixture.Checker.CallCount == 0, "HTML import started an external browser or account check.");
 }
 
 static async Task PlannedRowsAndProgress()
@@ -582,37 +723,45 @@ static async Task OrdinaryRetryIsNotInteractive()
     await fixture.Finished("owner", retry.Id);
 }
 
-static async Task DeclarationMetadataRoundtrip()
+static Task DeclarationMetadataRoundtrip() => RichDeclarationMetadataRoundtrip(20, NazkDeclarationSource.Name,
+    NazkDeclarationSource.ApiTemplate, NazkDeclarationSource.SearchTemplate, "https://public.nazk.gov.ua/documents/", "");
+
+// Provider data below is synthetic and exercises typed transport, not a claim about a live page.
+static Task YouControlMetadataRoundtrip() => RichDeclarationMetadataRoundtrip(21, YouControlDeclarationSource.Name,
+    null, YouControlDeclarationSource.SearchTemplate, "https://youcontrol.com.ua/catalog/individuals/declaration/", "/");
+
+static async Task RichDeclarationMetadataRoundtrip(int siteId, string sourceName, string? apiTemplate,
+    string searchTemplate, string documentPrefix, string documentSuffix)
 {
     await using var fixture = await Fixture.Create();
     const string identifier = "Тестовий Користувач";
     const string secret = "TEST-ONLY-declaration-source-key-640723";
+    var dateOnly = siteId == 21 ? "2026-03-24" : null;
     var declarations = new[]
     {
         new DeclarationSummary("11111111-1111-4111-8111-111111111111", identifier, "2025", "Щорічна", "Декларація",
             "Тестова посада", "Тестова установа", new DateTimeOffset(2026, 3, 1, 10, 20, 30, TimeSpan.Zero),
-            "https://public.nazk.gov.ua/documents/11111111-1111-4111-8111-111111111111"),
+            documentPrefix + "11111111-1111-4111-8111-111111111111" + documentSuffix),
         new DeclarationSummary("22222222-2222-4222-8222-222222222222", identifier, "2024", null, null,
-            null, null, null, "https://public.nazk.gov.ua/documents/22222222-2222-4222-8222-222222222222")
+            null, null, null, documentPrefix + "22222222-2222-4222-8222-222222222222" + documentSuffix, dateOnly)
     };
     var official = new MediaSource
     {
-        Id = 20, Name = "НАЗК — декларації", LinkType = "FullName", ErrorKeywordsRaw = "[]",
-        ApiUrl = "https://public-api.nazk.gov.ua/v2/documents/list?query={0}",
-        SearchUrl = "https://public.nazk.gov.ua/documents?query={0}", ApiKey = secret
+        Id = siteId, Name = sourceName, LinkType = "FullName", ErrorKeywordsRaw = "[]",
+        ApiUrl = apiTemplate, SearchUrl = searchTemplate, ApiKey = secret
     };
     var other = Work(1)[0];
     var original = Started(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(official, identifier), other }));
     var declarationCall = await fixture.Checker.Next();
-    Assert(declarationCall.Source.Id == 20 && declarationCall.Source.LinkType == "FullName" && !declarationCall.IsInteractive,
+    Assert(declarationCall.Source.Id == siteId && declarationCall.Source.LinkType == "FullName" && !declarationCall.IsInteractive,
         "The declaration source was not checked through the normal full-name work item.");
-    declarationCall.Response.TrySetResult(new AccountCheckResult(AccountStatus.Found, "Знайдено декларації в офіційному реєстрі.",
+    declarationCall.Response.TrySetResult(new AccountCheckResult(AccountStatus.Found, "Знайдено декларації у джерелі.",
         "Детермінована відповідь локального тесту.", declarations, 3));
     var unresolved = await fixture.Checker.Next();
     var progress = fixture.Service.Get("owner", original.Id)!;
-    var declarationRow = progress.Results.Single(row => row.SiteId == 20);
+    var declarationRow = progress.Results.Single(row => row.SiteId == siteId);
     AssertDeclarationMetadata(declarationRow, declarations, 3);
-    AssertDeclarationMetadata(Planned(progress).Single(row => row.SiteId == 20), declarations, 3);
+    AssertDeclarationMetadata(Planned(progress).Single(row => row.SiteId == siteId), declarations, 3);
     Assert(progress.Completed == 1 && progress.Total == 2 && progress.Results.Count == 1,
         "Declaration records were counted as separate site checks instead of one source result.");
     unresolved.Finish(AccountStatus.Blocked);
@@ -623,8 +772,8 @@ static async Task DeclarationMetadataRoundtrip()
         !serialized.Contains("public-api.nazk.gov.ua", StringComparison.Ordinal) &&
         !serialized.Contains("ApiKey", StringComparison.OrdinalIgnoreCase), "Declaration progress exposed source credentials or private API configuration.");
     var restored = JsonSerializer.Deserialize<SearchJobSnapshot>(serialized)!;
-    AssertDeclarationMetadata(restored.Results.Single(row => row.SiteId == 20), declarations, 3);
-    Assert(restored.Results.Single(row => row.SiteId == 20).CheckedAt == declarationRow.CheckedAt,
+    AssertDeclarationMetadata(restored.Results.Single(row => row.SiteId == siteId), declarations, 3);
+    Assert(restored.Results.Single(row => row.SiteId == siteId).CheckedAt == declarationRow.CheckedAt,
         "The declaration check timestamp changed during the progress JSON roundtrip.");
 
     var session = new MemorySession();
@@ -633,9 +782,24 @@ static async Task DeclarationMetadataRoundtrip()
     var history = new ResultsRepository(accessor).GetListResults();
     var stored = history.Single(result => result.Nickname == identifier).Details.Single();
     AssertDeclarationMetadata(stored, declarations, 3);
+    if (dateOnly != null)
+        Assert(stored.Declarations!.Single(item => item.SubmittedDate == dateOnly).SubmittedAt == null &&
+            restored.Results.Single(row => row.SiteId == siteId).Declarations!.Any(item => item.SubmittedDate == dateOnly && item.SubmittedAt == null),
+            "A YouControl date-only submission was lost or converted to an invented UTC timestamp in progress or history.");
     AssertDeclarationMetadata(new ResultsRepository(accessor).GetListLustResults()
         .Single(result => result.Nickname == identifier).Details.Single(), declarations, 3);
     Assert(!session.GetString("UserResults")!.Contains(secret, StringComparison.Ordinal), "Saved declaration history exposed a source API key.");
+    using (var excel = new MemoryStream(ExcelExport.GenerateExcelFile(history)))
+    using (var workbook = new ZipArchive(excel, ZipArchiveMode.Read))
+    using (var sheet = workbook.GetEntry("xl/worksheets/sheet2.xml")!.Open())
+    {
+        XNamespace spreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        var values = XDocument.Load(sheet).Descendants(spreadsheet + "t").Select(cell => cell.Value).ToList();
+        Assert(declarations.All(declaration => values.Contains(declaration.Url)) && values.Contains(identifier),
+            "The existing declarations worksheet omitted a provider's public document URLs or full-name identifier.");
+        if (dateOnly != null)
+            Assert(values.Contains(dateOnly), "Excel omitted the exact ISO date-only submission value.");
+    }
 
     var retry = Started(fixture.Service.Retry("owner", completed.Id));
     Assert(retry.Total == 1, "Retry included a confirmed declaration source result.");
@@ -655,12 +819,85 @@ static async Task DeclarationMetadataRoundtrip()
     Assert(manualCall.Source.Id == 1 && manualCall.IsInteractive, "Manual checking reopened the declaration source instead of its selected unresolved row.");
     manualCall.Finish(AccountStatus.Found);
     var manualFinal = await fixture.Finished("owner", manual.Id);
-    var retained = manualFinal.Results.Single(row => row.SiteId == 20);
+    var retained = manualFinal.Results.Single(row => row.SiteId == siteId);
     AssertDeclarationMetadata(retained, declarations, 3);
     Assert(retained.CheckedAt == declarationRow.CheckedAt && fixture.Checker.CallCount == 4 && fixture.Checker.InteractiveCallCount == 1,
         "Manual completion rechecked declarations or rewrote their verification timestamp.");
     Assert(fixture.Service.Retry("owner", manual.Id).StatusCode == 400,
         "A job containing only confirmed results including declarations was retried.");
+}
+
+static async Task YouControlUnresolvedRetry()
+{
+    await using var fixture = await Fixture.Create();
+    const string identifier = "Тестовий Користувач";
+    var source = new MediaSource
+    {
+        Id = 21, Name = YouControlDeclarationSource.Name, LinkType = "FullName",
+        SearchUrl = YouControlDeclarationSource.SearchTemplate, ErrorKeywordsRaw = "[]"
+    };
+    var official = new MediaSource
+    {
+        Id = 20, Name = NazkDeclarationSource.Name, LinkType = "FullName", ApiUrl = NazkDeclarationSource.ApiTemplate,
+        SearchUrl = NazkDeclarationSource.SearchTemplate, ErrorKeywordsRaw = "[]"
+    };
+    var retainedDeclarations = new[]
+    {
+        new DeclarationSummary("33333333-3333-4333-8333-333333333333", identifier, "2025", "Щорічна", "Декларація",
+            "Тестова посада", "Тестова установа", new DateTimeOffset(2026, 3, 1, 10, 0, 0, TimeSpan.Zero),
+            "https://public.nazk.gov.ua/documents/33333333-3333-4333-8333-333333333333")
+    };
+    var original = Started(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(official, identifier), new SearchWorkItem(source, identifier) }));
+    (await fixture.Checker.Next()).Response.TrySetResult(new AccountCheckResult(AccountStatus.Found,
+        "Детермінований результат іншого джерела.", Declarations: retainedDeclarations, DeclarationTotal: 1));
+    (await fixture.Checker.Next()).Response.TrySetResult(new AccountCheckResult(AccountStatus.Unconfirmed,
+        "Не вдалося прочитати відкриті службові метадані.", "Детермінована локальна відповідь."));
+    var unresolved = await fixture.Finished("owner", original.Id);
+    var retained = unresolved.Results.Single(row => row.SiteId == 20);
+    var youControlRow = unresolved.Results.Single(row => row.SiteId == 21);
+    Assert(youControlRow.Outcome == AccountStatus.Unconfirmed && youControlRow.Declarations == null && youControlRow.DeclarationTotal == null && unresolved.CanRetry,
+        "An unresolved provider invented an absent person, zero declarations, or disabled ordinary retry.");
+    Assert(youControlRow.ProfileUrl == YouControlDeclarationSource.SearchUrl(identifier),
+        "An unresolved YouControl check lost its correctly escaped public search link.");
+    var retried = Started(fixture.Service.Retry("owner", unresolved.Id));
+    Assert(retried.Total == 1 && !retried.IsInteractive, "Unresolved YouControl work was not admitted for normal retry.");
+    var invocation = await fixture.Checker.Next();
+    Assert(invocation.Source.Id == 21 && invocation.Identifier == identifier && !invocation.IsInteractive,
+        "YouControl retry changed its source or identifier or opened manual Chrome.");
+    invocation.Finish(AccountStatus.Blocked);
+    var blocked = await fixture.Finished("owner", retried.Id);
+    Assert(blocked.Results.Single().Outcome == AccountStatus.Blocked && blocked.CanRetry && fixture.Checker.CallCount == 3,
+        "A blocked declaration retry was silently treated as success or disabled for later retry.");
+
+    Assert(fixture.Service.TryStartManual("stranger", original.Id, 21, identifier).StatusCode == 404,
+        "A different owner could open a manual YouControl check.");
+    fixture.Time.Advance(TimeSpan.FromMinutes(1));
+    var manual = Started(fixture.Service.TryStartManual("owner", original.Id, 21, identifier));
+    Assert(manual.IsInteractive && manual.Total == 2 && manual.Completed == 1 && manual.Results.Count == 1,
+        "A recognized YouControl full-name source was rejected or reset retained progress during manual admission.");
+    var kept = manual.Results.Single();
+    AssertDeclarationMetadata(kept, retainedDeclarations, 1);
+    Assert(kept.SiteId == 20 && kept.CheckedAt == retained.CheckedAt,
+        "Manual YouControl admission replaced another provider's metadata or check time.");
+    var interactive = await fixture.Checker.Next();
+    Assert(interactive.IsInteractive && interactive.Source.Id == 21 && interactive.Source.LinkType == "FullName" &&
+        interactive.Source.ApiUrl == null && interactive.Source.ApiKey == null && interactive.Identifier == identifier,
+        "Manual YouControl reading used the wrong source, credentials, identifier, or non-interactive checker.");
+    var manualDeclarations = new[]
+    {
+        new DeclarationSummary("44444444-4444-4444-8444-444444444444", identifier, "2025", "Щорічна", "Декларація",
+            "Відкрита службова посада", "Відкрита установа", null,
+            "https://youcontrol.com.ua/catalog/individuals/declaration/44444444-4444-4444-8444-444444444444/")
+    };
+    interactive.Response.TrySetResult(new AccountCheckResult(AccountStatus.Found,
+        "Детерміновані публічні службові метадані.", Declarations: manualDeclarations, DeclarationTotal: 1));
+    var manualFinal = await fixture.Finished("owner", manual.Id);
+    AssertDeclarationMetadata(manualFinal.Results.Single(row => row.SiteId == 21), manualDeclarations, 1);
+    var stillRetained = manualFinal.Results.Single(row => row.SiteId == 20);
+    AssertDeclarationMetadata(stillRetained, retainedDeclarations, 1);
+    Assert(stillRetained.CheckedAt == retained.CheckedAt && manualFinal.Completed == 2 &&
+        fixture.Checker.CallCount == 4 && fixture.Checker.InteractiveCallCount == 1,
+        "Manual YouControl completion rechecked another provider or changed its timestamp.");
 }
 
 static void AssertDeclarationMetadata(SearchResultItem row, IReadOnlyList<DeclarationSummary> expected, int total)
@@ -733,52 +970,6 @@ static Task DeclarationExcelExport()
     Assert(emptyArchive.GetEntry("xl/worksheets/sheet2.xml") == null,
         "An export without declaration metadata gained an unnecessary extra worksheet.");
     return Task.CompletedTask;
-}
-
-static async Task YouControlSearchRoundtrip()
-{
-    await using var fixture = await Fixture.Create();
-    const string identifier = "Тестовий Користувач";
-    const string secret = "TEST-ONLY-private-source-query";
-    var source = new MediaSource { Id = 21, Name = YouControlDeclarationSource.Name, LinkType = "FullName",
-        SearchUrl = YouControlDeclarationSource.SearchTemplate + "&token=" + secret, ApiKey = secret };
-    var original = Started(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(source, identifier), Work(1)[0] }));
-    var prepared = await fixture.Checker.Next();
-    prepared.Response.TrySetResult(YouControlDeclarationSource.PrepareSearch(identifier, CancellationToken.None));
-    var other = await fixture.Checker.Next();
-    other.Finish(AccountStatus.Blocked);
-    var finished = await fixture.Finished("owner", original.Id);
-    var row = finished.Results.Single(item => item.SiteId == 21);
-    Assert(row.ProfileUrl == YouControlDeclarationSource.SearchUrl(identifier) && row.Outcome == AccountStatus.Unconfirmed &&
-        row.Declarations == null && row.DeclarationTotal == null && finished.CanRetry,
-        "The handoff did not retain its public search URL or invented a result inventory.");
-    Assert(!JsonSerializer.Serialize(finished).Contains(secret), "The public search URL leaked source credentials or private parameters.");
-    var session = new MemorySession();
-    var accessor = new HttpContextAccessor { HttpContext = new DefaultHttpContext { Session = session } };
-    var repository = new ResultsRepository(accessor);
-    repository.SaveJob(finished);
-    var history = repository.GetListResults();
-    var restored = history.SelectMany(item => item.Details).Single(item => item.SiteId == 21);
-    Assert(restored.ProfileUrl == row.ProfileUrl && restored.Declarations == null && restored.DeclarationTotal == null,
-        "History changed the prepared search into an absent or found declaration result.");
-    using var stream = new MemoryStream(ExcelExport.GenerateExcelFile(history));
-    using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
-    using var reader = new StreamReader(archive.GetEntry("xl/worksheets/sheet1.xml")!.Open());
-    Assert((await reader.ReadToEndAsync()).Contains("youcontrol.com.ua/catalog/individuals/search/") &&
-        archive.GetEntry("xl/worksheets/sheet2.xml") == null, "Export omitted the search URL or invented declaration rows.");
-    Assert(fixture.Service.TryStartManual("owner", finished.Id, 21, identifier).StatusCode == 400,
-        "The handoff opened the automated manual Chrome flow.");
-    var retry = Started(fixture.Service.Retry("owner", finished.Id));
-    Assert(retry.Total == 1, "The handoff was retried despite having no automated lookup.");
-    var call = await fixture.Checker.Next();
-    Assert(call.Source.Id == 1, "Retry chose the external catalog instead of the failed provider.");
-    call.Finish(AccountStatus.Found);
-    await fixture.Finished("owner", retry.Id);
-    var single = Started(fixture.Service.TryStart("owner", new[] { new SearchWorkItem(source, identifier) }));
-    (await fixture.Checker.Next()).Response.TrySetResult(YouControlDeclarationSource.PrepareSearch(identifier, CancellationToken.None));
-    var onlyHandoff = await fixture.Finished("owner", single.Id);
-    Assert(!onlyHandoff.CanRetry && fixture.Service.Retry("owner", single.Id).StatusCode == 400,
-        "An external search offered a meaningless automatic retry.");
 }
 
 static IReadOnlyList<SearchResultItem> Planned(SearchJobSnapshot snapshot) => snapshot.PlannedResults
@@ -979,4 +1170,10 @@ sealed class MemorySession : ISession
     public void Remove(string key) => _values.Remove(key);
     public void Set(string key, byte[] value) => _values[key] = value;
     public bool TryGetValue(string key, out byte[] value) => _values.TryGetValue(key, out value!);
+}
+
+sealed class MemoryTempDataProvider : ITempDataProvider
+{
+    public IDictionary<string, object> LoadTempData(HttpContext context) => new Dictionary<string, object>();
+    public void SaveTempData(HttpContext context, IDictionary<string, object> values) { }
 }

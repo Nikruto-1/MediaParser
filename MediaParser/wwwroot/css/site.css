@@ -197,6 +197,11 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 8px; }
 .declaration-results { margin: 18px 0 0 45px; padding-top: 16px; border-top: 1px solid #e4eadf; min-width: 0; }
 .declaration-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .declaration-heading h4 { margin: 0; font-size: .91rem; letter-spacing: -.01em; }
+.declaration-provider-note { margin: 0 0 10px; color: var(--muted); font-size: .72rem; line-height: 1.55; }
+.person-overview { margin: 0 0 15px; padding: 15px; border: 1px solid #d5e2cf; border-radius: 9px; background: #eef5e9; }
+.person-overview h5 { margin: 0 0 7px; font-size: .88rem; font-weight: 650; }
+.person-overview .field-hint { margin-bottom: 10px; }
+.person-overview .declaration-meta { margin-bottom: 0; }
 .declaration-count { color: var(--muted); font-size: .7rem; white-space: nowrap; }
 .declaration-results .identity-notice { margin: 0 0 13px; }
 .declaration-list { list-style: none; display: grid; gap: 10px; max-height: 560px; overflow-y: auto; margin: 0; padding: 2px 5px 2px 2px; scrollbar-width: thin; scrollbar-color: #c2cec0 transparent; }
@@ -208,7 +213,7 @@ progress::-moz-progress-bar { background: var(--accent); border-radius: 8px; }
 .declaration-link { font-size: .74rem; font-weight: 600; color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
 .declaration-link:hover { text-decoration: underline; }
 .declaration-all { display: inline-block; margin-top: 12px; }
-.declaration-limit, .declaration-empty { margin: 12px 0 0; font-size: .74rem; color: var(--muted); }
+.declaration-limit, .declaration-empty, .declaration-unavailable { margin: 12px 0 0; font-size: .74rem; color: var(--muted); }
 .result-details summary { display: list-item; color: #6a785f; cursor: pointer; font-size: .7rem; width: fit-content; }
 .result-details dl { display: grid; grid-template-columns: 125px 1fr; gap: 7px 15px; margin: 13px 0 1px; font-size: .75rem; }
 .result-details dt { color: #6d795f; font-weight: 500; }

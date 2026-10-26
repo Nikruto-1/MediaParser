@@ -45,6 +45,7 @@ builder.Services.AddSingleton<ICaptchaAutomation, BrowserCaptchaAutomation>();
 builder.Services.AddHttpClient<INazkDeclarationSearch, NazkDeclarationSearch>().ConfigurePrimaryHttpMessageHandler(() =>
     new SocketsHttpHandler { AllowAutoRedirect = false, PooledConnectionLifetime = TimeSpan.FromMinutes(2) });
 builder.Services.AddSingleton<IAccountChecker, AccountChecker>();
+builder.Services.AddSingleton<IYouControlDeclarationSearch, YouControlDeclarationSearch>();
 builder.Services.AddSingleton<SearchJobService>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<SearchJobService>());
 

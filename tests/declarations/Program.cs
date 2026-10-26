@@ -11,7 +11,11 @@ using OpenQA.Selenium;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
-    ("YouControl prepares a public search handoff without requesting data or solving CAPTCHA", YouControlHandoff),
+    ("YouControl dispatch uses a typed reader without CAPTCHA services", YouControlHandoff),
+    ("YouControl public metadata parser excludes private fields and preserves date-only values", YouControlReaderTests.ParserMetadata),
+    ("YouControl search parser validates names, routes, empty results, and access barriers", YouControlReaderTests.SearchAndBarriers),
+    ("YouControl browser reader reads public pages, disposes Chrome, and respects cancellation", YouControlReaderTests.BrowserReading),
+    ("Saved public catalog import is bounded and keeps only professional metadata", YouControlReaderTests.SavedPageImport),
     ("NAZK dispatch recognizes only official full-name endpoints", SourceRecognition),
     ("NAZK searches use their dedicated client without Chrome, credentials, or CAPTCHA", DedicatedDispatch),
     ("Public API requests keep a fixed scope and escape full-name query text", FixedRequestAndEscaping),
@@ -25,6 +29,13 @@ var tests = new (string Name, Func<Task> Run)[]
     ("Synthetic contract: UUIDs and public names are required and duplicates do not create extra records", SyntheticIdentityValidation),
     ("Synthetic contract: only the first twenty public declaration summaries are retained", SyntheticResultLimit)
 };
+if (args.FirstOrDefault(value => value.StartsWith("--live-youcontrol=", StringComparison.Ordinal)) is { } live)
+{
+    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(125));
+    var result = await new YouControlDeclarationSearch().SearchAsync(live["--live-youcontrol=".Length..], timeout.Token, args.Contains("--interactive"));
+    Console.WriteLine($"Live public catalog status: {result.Status}; documents: {result.Declarations?.Count ?? 0}; {result.Reason}");
+    return result.Status == AccountStatus.Found ? 0 : 2;
+}
 var failures = 0;
 foreach (var test in tests)
 {
@@ -387,14 +398,14 @@ static async Task YouControlHandoff()
         parsed.Count == 1 && parsed["q"] == query && uri.Fragment.Length == 0, "Input changed the public search scope.");
     var unusedDeclarations = new FakeDeclarations(new(AccountStatus.Error, "Must not be used"));
     var captcha = new ForbiddenCaptcha();
-    var checker = new AccountChecker(captcha, unusedDeclarations);
+    var reader = new TestYouControlReader();
+    var checker = new AccountChecker(captcha, unusedDeclarations, reader);
     var budget = new CaptchaSolveBudget(2);
     var results = new[] { await checker.CheckAsync(source, query, CancellationToken.None),
         await checker.CheckWithCaptchaAsync(source, query, budget, _ => throw new Exception("Unexpected CAPTCHA progress"), CancellationToken.None),
         await checker.CheckInteractiveAsync(source, query, CancellationToken.None) };
-    Assert(results.All(result => result.Status == AccountStatus.Unconfirmed && result.Declarations == null &&
-        result.DeclarationTotal == null && result.Reason.Contains("YouControl") && result.Evidence!.Contains("не підключено")),
-        "A prepared link invented a declaration result or document count.");
+    Assert(results.All(result => result == reader.Result) && reader.Modes.SequenceEqual(new[] { false, false, true }),
+        "Normal and manual checks did not dispatch to the typed catalog reader.");
     Assert(unusedDeclarations.Calls == 0 && captcha.Calls == 0 && budget.Used == 0, "The handoff touched API or CAPTCHA services.");
     using var cancellation = new CancellationTokenSource();
     cancellation.Cancel();
@@ -479,4 +490,14 @@ sealed class BlockingReadStream : Stream
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
     public override void SetLength(long value) => throw new NotSupportedException();
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+}
+
+sealed class TestYouControlReader : IYouControlDeclarationSearch
+{
+    public List<bool> Modes { get; } = new();
+    public AccountCheckResult Result { get; } = new(AccountStatus.Found, "Typed public metadata", Declarations: new[]
+    { new DeclarationSummary("11111111-1111-4111-8111-111111111111", "Тестовий Користувач", null, "Річна", null,
+        "Фахівець", "Тестова установа", null, "https://youcontrol.com.ua/catalog/individuals/declaration/11111111-1111-4111-8111-111111111111/", "2026-03-24") }, DeclarationTotal: 1);
+    public Task<AccountCheckResult> SearchAsync(string fullName, CancellationToken cancellationToken, bool interactive = false)
+    { Modes.Add(interactive); return Task.FromResult(cancellationToken.IsCancellationRequested ? new(AccountStatus.Cancelled, "Cancelled") : Result); }
 }

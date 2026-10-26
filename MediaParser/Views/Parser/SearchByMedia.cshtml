@@ -10,6 +10,7 @@
     var captchaAvailable = ViewData["CaptchaAvailable"] is true;
     var captchaEnabled = ViewData["CaptchaEnabled"] is true;
     var captchaTaskLimit = ViewData["CaptchaTaskLimit"] is int configuredLimit ? Math.Clamp(configuredLimit, 1, 10) : 3;
+    var importError = TempData["ImportError"] as string;
 }
 
 <div id="searchWorkspace" class="search-workspace" data-active-job-id="@ViewData["ActiveJobId"]" data-start-url="@Url.Action("StartSearch", "Parser")"
@@ -25,6 +26,10 @@
     </header>
 
     <div id="searchError" class="alert alert-danger" role="alert" tabindex="-1" hidden></div>
+    @if (!string.IsNullOrWhiteSpace(importError))
+    {
+        <div class="alert alert-danger" role="alert">@importError <a href="#youcontrolImport">Перейти до імпорту сторінки</a></div>
+    }
     @if (!ViewData.ModelState.IsValid)
     {
         <div class="alert alert-danger" role="alert">@Html.ValidationSummary(false)</div>
@@ -56,13 +61,13 @@
                         <div class="identifier-row">
                             <div class="identifier-input">
                                 <label class="input-label" for="identifier_@index">Ідентифікатор @(index + 1)</label>
-                                <input id="identifier_@index" name="Nicknames[@index]" value="@identifiers[index]" class="form-control identifier-value" required maxlength="100" autocomplete="off" spellcheck="false" placeholder="Наприклад, nickname" aria-describedby="identifierHint" />
+                                <input id="identifier_@index" name="Nicknames[@index]" value="@identifiers[index]" class="form-control identifier-value" required maxlength="@(initialMode == "User" ? 100 : 512)" autocomplete="off" spellcheck="false" placeholder="@(initialMode == "User" ? "Наприклад, nickname" : "ПІБ або URL картки YouControl")" aria-describedby="identifierHint" />
                             </div>
                             <button type="button" class="icon-button remove-identifier" aria-label="Видалити ідентифікатор @(index + 1)" title="Видалити ідентифікатор" hidden="@(identifiers.Count == 1)"><span aria-hidden="true">×</span></button>
                         </div>
                     }
                 </div>
-                <p class="field-hint" id="identifierHint">До 5 ідентифікаторів за один пошук. Дублікати перевіряються один раз.</p>
+                <p class="field-hint" id="identifierHint">@(initialMode == "User" ? "До 5 ідентифікаторів за один пошук. Дублікати перевіряються один раз." : "ПІБ — до 100 символів; HTTPS-URL картки YouControl — до 512. Для URL оберіть лише YouControl. До 5 ідентифікаторів за пошук.")</p>
                 <button id="addIdentifier" type="button" class="btn btn-outline-secondary btn-sm"><span aria-hidden="true">＋</span> Додати ідентифікатор</button>
                 <div class="captcha-option @(!captchaAvailable ? "is-unavailable" : "")">
                     <label for="automaticCaptcha" class="captcha-toggle"><input id="automaticCaptcha" type="checkbox" name="automaticCaptcha" value="true" checked="@captchaAvailable" disabled="@(!captchaAvailable)" aria-describedby="captchaHint captchaAvailability" /><span>Розв’язувати капчу автоматично</span></label>
@@ -90,10 +95,11 @@
                         var sourceHint = MediaParser.Classes.SourceCapabilities.GetHint(source.Media.SearchUrl);
                         var isDeclarationSource = Uri.TryCreate(source.Media.SearchUrl, UriKind.Absolute, out var sourceUri)
                             && sourceUri.Host.Equals("public.nazk.gov.ua", StringComparison.OrdinalIgnoreCase);
-                        var sourceType = MediaParser.Services.Declarations.YouControlDeclarationSource.IsSource(source.Media)
-                            ? "Відкрити каталог • декларації" : isDeclarationSource ? "Публічний реєстр • декларації"
+                        var isYouControlSource = MediaParser.Services.Declarations.YouControlDeclarationSource.IsSource(source.Media);
+                        var sourceType = isYouControlSource
+                            ? "YouControl • публічні декларації" : isDeclarationSource ? "Публічний реєстр • декларації"
                             : source.Media.LinkType == "FullName" ? "Пошук за ПІБ" : source.Media.LinkType == "User" ? "Профіль за нікнеймом" : "Тип не налаштовано";
-                        <label class="source-option @(!matches ? "is-incompatible" : "")" data-source-id="@source.Media.Id" data-source-name="@source.Media.Name" data-mode="@source.Media.LinkType" data-manual-supported="@(source.Media.LinkType == "User" && MediaParser.Classes.SourceCapabilities.SupportsManualCheck(source.Media.SearchUrl) ? "true" : "false")">
+                        <label class="source-option @(!matches ? "is-incompatible" : "")" data-source-id="@source.Media.Id" data-source-name="@source.Media.Name" data-mode="@source.Media.LinkType" data-manual-supported="@(isYouControlSource || source.Media.LinkType == "User" && MediaParser.Classes.SourceCapabilities.SupportsManualCheck(source.Media.SearchUrl) ? "true" : "false")">
                             <input type="checkbox" class="source-checkbox" name="sourceIds" value="@source.Media.Id" checked="@(matches && supported)" disabled="@(!matches || !supported)" data-initial-selected="@(supported ? "true" : "false")" aria-describedby="@("sourceModeHint" + (sourceHint != null ? " sourceHint_" + source.Media.Id : string.Empty))" />
                             <span class="source-avatar" aria-hidden="true">@source.Media.Name.FirstOrDefault()</span>
                             <span class="source-option-text"><span class="source-name">@source.Media.Name</span><span class="source-type">@sourceType</span>@if (sourceHint != null) { <span class="source-hint" id="sourceHint_@source.Media.Id">@sourceHint</span> }</span>
@@ -144,6 +150,27 @@
         <div id="resultsEmpty" class="empty-state" hidden><span class="empty-symbol" aria-hidden="true">⌕</span><h3>Нічого за цими фільтрами</h3><p>Змініть статус, джерело або текст пошуку.</p><button type="button" id="resetResultFilters" class="btn btn-outline-secondary btn-sm">Скинути фільтри</button></div>
         <p class="result-interpretation">Статус «Не підтверджено» або обмеження доступу не означає, що акаунта чи декларацій немає. Збіг ПІБ не підтверджує особу. Відкрийте деталі, щоб побачити причину.</p>
     </section>
+
+    <details id="youcontrolImport" class="workspace-panel mt-4" open="@(!string.IsNullOrWhiteSpace(importError))">
+        <summary class="fw-semibold">Додати зі збереженої сторінки YouControl</summary>
+        <div class="mt-3">
+            <p class="field-hint">Якщо автоматичне читання заблоковано, відкрийте публічну картку людини в браузері та збережіть її як файл .html. Оберіть цей файл нижче: будуть виділені лише публічні професійні відомості й список декларацій. Супутня папка файлів не потрібна.</p>
+            <p class="identity-notice">Імпорт не перевіряє адресу сторінки в інтернеті та не підтверджує справжність файлу. Адресу джерела надаєте ви. Збіг ПІБ не підтверджує особу; не завантажуйте повні фінансові декларації.</p>
+            <form asp-controller="Parser" asp-action="ImportYouControl" method="post" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="importSourceUrl" class="input-label">Адреса публічної картки YouControl</label>
+                    <input id="importSourceUrl" name="sourceUrl" type="url" class="form-control" required maxlength="512" placeholder="https://youcontrol.com.ua/catalog/individuals/prizvyshche-imia/" aria-describedby="importSourceHint" />
+                    <p id="importSourceHint" class="field-hint mt-2">HTTPS-адреса картки людини, до 512 символів. Адреса окремої декларації або пошукового списку не підходить.</p>
+                </div>
+                <div class="form-group">
+                    <label for="importPage" class="input-label">Збережена HTML-сторінка</label>
+                    <input id="importPage" name="page" type="file" class="form-control" required accept=".html,.htm,text/html" aria-describedby="importPageHint" />
+                    <p id="importPageHint" class="field-hint mt-2">Файл .html або .htm, до 2 MiB. Використовуйте публічну картку з таблицею декларацій, без приватних або повних фінансових сторінок.</p>
+                </div>
+                <button type="submit" class="btn btn-outline-secondary">Додати дані до історії</button>
+            </form>
+        </div>
+    </details>
 
     @if (ViewData["Results"] is List<ResultsModel> legacyResults && legacyResults.Count > 0)
     {

@@ -77,7 +77,7 @@ namespace MediaParser.Classes
                     WriteSheet(archive, "xl/worksheets/sheet2.xml", 9, writer =>
                     {
                         var row = 1;
-                        WriteRow(writer, row++, new[] { "Ідентифікатор", "ПІБ", "Звітний рік", "Тип декларації", "Тип документа", "Посада", "Місце роботи", "Подано (UTC)", "URL декларації" });
+                        WriteRow(writer, row++, new[] { "Ідентифікатор", "ПІБ", "Звітний рік", "Тип декларації", "Тип документа", "Посада", "Місце роботи", "Подано (час у UTC, якщо відомий)", "URL декларації" });
                         foreach (var result in results)
                             foreach (var detail in result.Details ?? new())
                                 foreach (var declaration in detail.Declarations ?? Array.Empty<DeclarationSummary>())
@@ -86,7 +86,8 @@ namespace MediaParser.Classes
                                         detail.Identifier, declaration.FullName, declaration.DeclarationYear ?? string.Empty,
                                         declaration.DeclarationType ?? string.Empty, declaration.DocumentType ?? string.Empty,
                                         declaration.Position ?? string.Empty, declaration.Workplace ?? string.Empty,
-                                        declaration.SubmittedAt?.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture) ?? string.Empty,
+                                        declaration.SubmittedAt?.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture)
+                                            ?? declaration.SubmittedDate ?? string.Empty,
                                         declaration.Url
                                     });
                     });
